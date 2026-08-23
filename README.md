@@ -77,9 +77,17 @@ On a machine that already runs `linux-asahi`:
 Writes `release/omarchy-mac-iso-usb/omarchy-mac-usb.img` — GPT with a FAT32
 ESP labelled `OMARCHYISO` (standalone GRUB, this host's `linux-asahi`,
 initramfs with `dwc3-apple`) and a btrfs payload labelled `OMARCHYLIVE`
-(subvol `@`, tiny busybox `/sbin/init` until S3). No root required. Copying
-files onto an existing FAT stick is not enough — the payload is its own
-partition.
+(subvol `@`, tiny busybox `/sbin/init`). No root required. Copying files
+onto an existing FAT stick is not enough — the payload is its own partition.
+
+S3 systemd userspace (not the Omarchy desktop) — needs root, `arch-install-scripts`:
+
+```
+sudo ./bin/omarchy-mac-iso-make --usb --rootfs
+```
+
+Success prints `OMARCHY_MAC_USB_SYSTEMD` and an autologin root shell on tty1.
+Default `--usb` without `--rootfs` still hangs at busybox pid 1.
 
 Flash (destroys the target stick):
 

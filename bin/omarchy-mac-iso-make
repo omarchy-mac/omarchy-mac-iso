@@ -22,39 +22,57 @@ check_deps() {
 
 usage() {
     cat <<'EOF'
-Usage: omarchy-mac-iso-make [--usb]
+Usage: omarchy-mac-iso-make [--usb] [--rootfs]
 
 Default: M0 QEMU artifact (Alpine linux-virt kernel + initramfs) into
 release/omarchy-mac-iso-arm64/. Does not boot a Mac.
 
 --usb: native Apple Silicon GPT image (linux-asahi, GRUB ESP, btrfs
 payload) into release/omarchy-mac-iso-usb/. Requires linux-asahi on the host.
+Tiny busybox pid 1, unprivileged.
+
+--usb --rootfs: pacstrap Arch `base` (systemd) into the payload instead of
+busybox. Needs root. Not the Omarchy desktop.
 EOF
 }
 
 main() {
     local mode="qemu"
-    case "${1:-}" in
-        -h|--help)
-            usage
-            exit 0
-            ;;
-        --usb)
-            mode="usb"
-            shift
-            [[ "${1:-}" == "" ]] || fail "unexpected argument: $1"
-            ;;
-        "")
-            ;;
-        *)
-            fail "unexpected argument: $1"
-            ;;
-    esac
+    local rootfs=0
+    while (( $# > 0 )); do
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            --usb)
+                mode="usb"
+                shift
+                ;;
+            --rootfs)
+                rootfs=1
+                shift
+                ;;
+            *)
+                fail "unexpected argument: $1"
+                ;;
+        esac
+    done
+
+    if (( rootfs == 1 )) && [[ $mode != usb ]]; then
+        fail "--rootfs requires --usb"
+    fi
 
     if [[ "${mode}" == "usb" ]]; then
         log "Checking USB-image build dependencies"
         local usb_dir="${repo_root}/release/omarchy-mac-iso-usb"
         rm -rf "${usb_dir}"
+        if (( rootfs == 1 )); then
+            (( EUID == 0 )) || fail "--usb --rootfs needs root (pacstrap)"
+            export OMARCHY_USB_ROOTFS=1
+        else
+            unset OMARCHY_USB_ROOTFS || true
+        fi
         "${builder_dir}/build-usb-image.sh" "${usb_dir}"
         log "Build complete"
         return 0

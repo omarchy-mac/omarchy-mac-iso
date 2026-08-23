@@ -36,6 +36,10 @@ check "KERNEL_PKG_SHA256 is 64 hex chars" bash -c "[[ '${KERNEL_PKG_SHA256}' =~ 
 check "omarchy-mac-iso-make --help works offline" "${repo_root}/bin/omarchy-mac-iso-make" --help
 check "omarchy-mac-iso-make --help mentions --usb" \
   grep -q -- '--usb' <("${repo_root}/bin/omarchy-mac-iso-make" --help)
+check "omarchy-mac-iso-make --help mentions --rootfs" \
+  grep -q -- '--rootfs' <("${repo_root}/bin/omarchy-mac-iso-make" --help)
+check "omarchy-mac-iso-make --rootfs without --usb fails" \
+  bash -c '! '"${repo_root}"'/bin/omarchy-mac-iso-make --rootfs'
 check "omarchy-mac-iso-boot --help works offline" "${repo_root}/bin/omarchy-mac-iso-boot" --help
 check "usb grub.cfg finds initramfs-omarchy-usb.img" \
   grep -q initramfs-omarchy-usb.img "${repo_root}/configs/usb/grub.cfg"

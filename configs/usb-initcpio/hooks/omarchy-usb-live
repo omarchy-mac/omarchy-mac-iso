@@ -64,10 +64,10 @@ run_hook() {
 
   echo "writable overlay" >"$NEW_ROOT/omarchy-mac-overlay-write"
 
-  if [ ! -x "$NEW_ROOT/sbin/init" ] || [ -L "$NEW_ROOT/sbin/init" ]; then
-    hang "omarchy-usb-live: /sbin/init missing or is a symlink"
+  if [ ! -x "$NEW_ROOT/sbin/init" ]; then
+    hang "omarchy-usb-live: /sbin/init missing"
   fi
-  if [ -L "$NEW_ROOT/bin/busybox" ]; then
+  if [ -e "$NEW_ROOT/bin/busybox" ] && [ -L "$NEW_ROOT/bin/busybox" ]; then
     hang "omarchy-usb-live: busybox is a symlink (switch_root would ENOENT)"
   fi
 

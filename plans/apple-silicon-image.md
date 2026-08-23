@@ -304,7 +304,10 @@ the busybox tree on `@`.
 
 ### S3 — The rootfs artifact
 
-`builder/build-rootfs.sh`: pacstrap → Asahi packages → the fork's package set →
+`builder/build-rootfs.sh` via `./bin/omarchy-mac-iso-make --usb --rootfs`
+(needs root, `arch-install-scripts`). First cut: pacstrap Arch `base`
+(systemd, no kernel — live kernel stays on the ESP) onto `@`. Not the
+Omarchy desktop. Then Asahi packages → the fork's package set →
 provisioning with hardware-specific work that is *not* per-machine done at
 build time (audio stack, `fnmode`, notch modprobe) → defer keymap / user /
 hostname / anything that reads this panel to first boot or the installer →

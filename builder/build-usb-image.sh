@@ -34,7 +34,11 @@ trap cleanup EXIT
 mkdir -p "$work" "$out_dir"
 
 log "Building btrfs payload (OMARCHYLIVE)"
-"$repo_root/builder/build-usb-rootimg.sh" "$work/payload.img"
+if [[ ${OMARCHY_USB_ROOTFS:-} == 1 ]]; then
+  "$repo_root/builder/build-rootfs.sh" "$work/payload.img"
+else
+  "$repo_root/builder/build-usb-rootimg.sh" "$work/payload.img"
+fi
 payload_bytes=$(stat -c %s "$work/payload.img")
 payload_mib=$(( (payload_bytes + 1024 * 1024 - 1) / (1024 * 1024) ))
 
@@ -111,6 +115,8 @@ cp /boot/vmlinuz-linux-asahi "$out_dir/vmlinuz-linux-asahi"
 cp "$repo_root/configs/usb/grub.cfg" "$out_dir/grub.cfg"
 
 git_ref="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+payload_kind="busybox pid 1"
+[[ ${OMARCHY_USB_ROOTFS:-} == 1 ]] && payload_kind="systemd base (pacstrap)"
 cat > "$out_dir/BUILD_INFO" <<EOF
 artifact: omarchy-mac-usb
 built_from_ref: $git_ref
@@ -118,7 +124,7 @@ kernel: linux-asahi $kver
 contract: GPT disk image, FAT32 ESP labelled OMARCHYISO + btrfs payload labelled OMARCHYLIVE (subvol=@)
   EFI/BOOT/BOOTAA64.EFI (grub-mkstandalone)
   /vmlinuz-linux-asahi + /initramfs-omarchy-usb.img on the ESP
-  payload partition is the live root (not a root.img file on FAT)
+  payload: $payload_kind
 flash: dd if=omarchy-mac-usb.img of=/dev/sdX bs=4M status=progress conv=fsync
 EOF
 
