@@ -44,8 +44,14 @@ check "sh -n live-init" sh -n "${repo_root}/configs/usb/live-init"
 check "live-init sets PATH to /bin" grep -q 'PATH=/bin' "${repo_root}/configs/usb/live-init"
 check "usb hook execs switch_root" grep -q 'exec switch_root' \
   "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-live"
+check "usb hook mounts OMARCHYLIVE subvol=@" grep -q 'subvol=@' \
+  "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-live"
+check "usb mkinitcpio lists btrfs" grep -q btrfs \
+  "${repo_root}/configs/usb-initcpio/mkinitcpio.conf"
 check "usb rootimg copies initcpio busybox" grep -q /usr/lib/initcpio/busybox \
   "${repo_root}/builder/build-usb-rootimg.sh"
+check "usb image builds a payload partition" grep -q 'mkpart payload' \
+  "${repo_root}/builder/build-usb-image.sh"
 
 if (( failures > 0 )); then
     echo "${failures} failure(s)"

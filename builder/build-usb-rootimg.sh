@@ -1,8 +1,10 @@
 #!/bin/bash
-# Usage: build-usb-rootimg.sh <out-root.img>
-# Tiny ext4 root with a real /sbin/init (busybox + its shared libraries).
-# The overlay spike failed switch_root because busybox was a dangling symlink
-# and the binary is dynamically linked — copy the ELF and libc, not a link.
+# Usage: build-usb-rootimg.sh <out-payload.img>
+# Btrfs payload (label OMARCHYLIVE) with @ / @home / @log. Tiny busybox
+# /sbin/init lives on @ — S3 replaces this tree with a pacstrap'd Omarchy.
+# compress=none so a later zip still shrinks. Copy the busybox ELF and libc,
+# not a symlink (that is what panicked the overlay spike). Unprivileged:
+# mkfs.btrfs --rootdir --subvol.
 set -euo pipefail
 
 out="$1"
@@ -17,10 +19,12 @@ fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 [[ ! -L $bb ]] || fail "$bb is a symlink; copy the ELF"
 command -v readelf >/dev/null && command -v ldd >/dev/null && command -v file >/dev/null \
   || fail "need readelf, ldd, and file to pack busybox and its libraries"
+command -v mkfs.btrfs >/dev/null || fail "need btrfs-progs"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-tree="$work/tree"
+rootdir="$work/root"
+tree="$rootdir/@"
 
 copy_into_tree() {
   local src=$1 rel=$2
@@ -43,6 +47,7 @@ copy_shared_objects() {
 }
 
 mkdir -p "$tree/bin" "$tree/sbin" "$tree/proc" "$tree/sys" "$tree/dev" "$tree/run" "$tree/tmp"
+mkdir -p "$rootdir/@home" "$rootdir/@log"
 
 printf 'omarchy-mac-live-ok usb-image %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   > "$tree/omarchy-mac-live-ok"
@@ -57,9 +62,14 @@ install -m755 "$live_init" "$tree/sbin/init"
 cp -L "$tree/sbin/init" "$tree/init"
 chmod 755 "$tree/init"
 
-file -b "$tree/bin/busybox" | grep -q ELF || fail "busybox in root.img is not an ELF"
+file -b "$tree/bin/busybox" | grep -q ELF || fail "busybox in payload is not an ELF"
 [[ -x $tree/sbin/init && ! -L $tree/sbin/init ]] || fail "/sbin/init must be a regular executable"
 
 rm -f "$out"
-truncate -s 32M "$out"
-mkfs.ext4 -F -q -L OMARCHYLIVE -d "$tree" "$out"
+truncate -s 128M "$out"
+mkfs.btrfs -q -L OMARCHYLIVE --csum crc32c \
+  --rootdir "$rootdir" \
+  --subvol default:@ \
+  --subvol rw:@home \
+  --subvol rw:@log \
+  "$out"

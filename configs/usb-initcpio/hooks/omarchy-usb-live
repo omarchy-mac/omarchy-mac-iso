@@ -1,20 +1,19 @@
 #!/usr/bin/ash
 # SPDX-License-Identifier: MIT
 #
-# After asahi firmware + udev: mount the USB ESP, loop-mount root.img,
-# overlay a tmpfs, switch_root into /sbin/init on that overlay.
+# After asahi firmware + udev: mount the btrfs payload (label OMARCHYLIVE,
+# subvol=@), overlay a tmpfs, switch_root into /sbin/init on that overlay.
 
-USB_LABEL="OMARCHYISO"
-USB_MOUNT="/run/omarchy-usb"
+PAYLOAD_LABEL="OMARCHYLIVE"
 LIVE_MOUNT="/run/omarchy-root"
 OVL_MOUNT="/run/omarchy-ovl"
 NEW_ROOT="/new_root"
 MARKER="omarchy-mac-live-ok"
 
-wait_for_usb() {
+wait_for_payload() {
   i=0
   while [ "$i" -lt 30 ]; do
-    if [ -e /dev/disk/by-label/"$USB_LABEL" ] || [ -b /dev/sda1 ]; then
+    if [ -e /dev/disk/by-label/"$PAYLOAD_LABEL" ] || [ -b /dev/sda2 ]; then
       return 0
     fi
     sleep 1
@@ -39,33 +38,19 @@ run_hook() {
   fi
   sleep 2
 
-  if ! wait_for_usb; then
-    hang "omarchy-usb-live: USB volume $USB_LABEL never appeared"
+  if ! wait_for_payload; then
+    hang "omarchy-usb-live: payload $PAYLOAD_LABEL never appeared (dd the GPT image, not a FAT file copy)"
   fi
 
-  if [ -e /dev/disk/by-label/"$USB_LABEL" ]; then
-    usb_dev=$(readlink -f /dev/disk/by-label/"$USB_LABEL")
+  if [ -e /dev/disk/by-label/"$PAYLOAD_LABEL" ]; then
+    payload_dev=$(readlink -f /dev/disk/by-label/"$PAYLOAD_LABEL")
   else
-    usb_dev=/dev/sda1
+    payload_dev=/dev/sda2
   fi
 
-  mkdir -p "$USB_MOUNT"
-  if ! mount -t vfat -o ro "$usb_dev" "$USB_MOUNT"; then
-    hang "omarchy-usb-live: failed to mount $usb_dev"
-  fi
-
-  if [ ! -f "$USB_MOUNT/root.img" ]; then
-    hang "omarchy-usb-live: no root.img on $usb_dev"
-  fi
-
-  if command -v udevadm >/dev/null 2>&1; then
-    udevadm settle --timeout=5 2>/dev/null
-  fi
-
-  loop_dev=$(losetup -f --show "$USB_MOUNT/root.img") || hang "omarchy-usb-live: losetup failed"
   mkdir -p "$LIVE_MOUNT"
-  if ! mount -t ext4 -o ro "$loop_dev" "$LIVE_MOUNT"; then
-    hang "omarchy-usb-live: failed to mount root.img"
+  if ! mount -t btrfs -o ro,subvol=@ "$payload_dev" "$LIVE_MOUNT"; then
+    hang "omarchy-usb-live: failed to mount $payload_dev subvol=@"
   fi
 
   mkdir -p "$OVL_MOUNT" "$NEW_ROOT"
@@ -87,7 +72,7 @@ run_hook() {
   fi
 
   echo "==> OMARCHY_MAC_USB_READY" >/dev/console
-  echo "==> OMARCHY_MAC_USB_READY usb=$usb_dev loop=$loop_dev marker=$(cat "$LIVE_MOUNT/$MARKER" 2>/dev/null)"
+  echo "==> OMARCHY_MAC_USB_READY payload=$payload_dev marker=$(cat "$LIVE_MOUNT/$MARKER" 2>/dev/null)"
 
   mkdir -p "$NEW_ROOT/proc" "$NEW_ROOT/sys" "$NEW_ROOT/dev" "$NEW_ROOT/run"
   mount --move /proc "$NEW_ROOT/proc" 2>/dev/null || mount -t proc proc "$NEW_ROOT/proc"
