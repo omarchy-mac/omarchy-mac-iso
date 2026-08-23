@@ -20,6 +20,8 @@ loop=""
 mnt=""
 cleanup() {
   if [[ -n $mnt ]]; then
+    umount "$mnt/boot" 2>/dev/null || true
+    umount "$mnt/run" 2>/dev/null || true
     umount "$mnt" 2>/dev/null || true
   fi
   if [[ -n $loop ]]; then
@@ -47,11 +49,27 @@ mkfs.btrfs -q -L OMARCHYLIVE --csum crc32c \
 loop="$(losetup -f --show "$out")"
 mount -o subvol=@ "$loop" "$mnt"
 
-# Kernel is still loaded from the ESP; linux-asahi here is for modules
-# (brcmfmac, cdc_ether, …) after switch_root. Firmware is copied from the
-# initramfs at boot (internal ESP), not baked in.
-log "pacstrap base linux-asahi networkmanager iwd"
-pacstrap -c "$mnt" base linux-asahi networkmanager iwd asahi-scripts
+# Isolate the chroot so alpm hooks cannot mount the host ESP
+# (/run/.system-efi → nvme0n1p4). Do not pacstrap asahi-scripts or
+# linux-asahi: update-m1n1 is for the installed system, and the live
+# kernel is already on the USB ESP. Copy this host's modules so they
+# match that kernel (brcmfmac, cdc_ether, …). Firmware is copied from
+# the initramfs at boot.
+mkdir -p "$mnt/run" "$mnt/boot"
+mount -t tmpfs tmpfs "$mnt/run"
+mount -t tmpfs tmpfs "$mnt/boot"
+
+log "pacstrap base networkmanager iwd"
+pacstrap -c "$mnt" base networkmanager iwd
+
+umount "$mnt/boot"
+umount "$mnt/run"
+
+kver=$(uname -r)
+log "Copying host modules $kver (match ESP vmlinuz)"
+mkdir -p "$mnt/usr/lib/modules"
+cp -a "/usr/lib/modules/$kver" "$mnt/usr/lib/modules/"
+[[ -d $mnt/usr/lib/modules/$kver ]] || fail "failed to copy modules for $kver"
 
 install -m644 "$repo_root/configs/usb/rootfs/issue" "$mnt/etc/issue"
 install -d "$mnt/etc/systemd/system"
