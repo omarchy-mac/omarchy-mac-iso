@@ -4,5 +4,6 @@ Wi-Fi: nmtui Rescan until SSIDs appear, then
 USB:   nmcli device connect enu1
 Check: cat /sys/module/hid_apple/parameters/fnmode   (want 1)
        gum --version
+Install (WIP, wipes the target disk): omarchy-mac-install
 
 

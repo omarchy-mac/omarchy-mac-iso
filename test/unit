@@ -64,6 +64,10 @@ check "rootfs pacstraps mesa and gum" grep -q ' mesa ' \
   "${repo_root}/builder/build-rootfs.sh"
 check "hid_apple fnmode=1 is in the tree" grep -q 'fnmode=1' \
   "${repo_root}/configs/usb/modprobe.d/hid_apple.conf"
+check "install script refuses Apple partition GUIDs" grep -q 7c3457ef \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "sh -n omarchy-mac-install" bash -n \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "usb hook copies vendor firmware" grep -q '/lib/firmware/vendor' \
   "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-live"
 

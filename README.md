@@ -90,7 +90,9 @@ Success prints `OMARCHY_MAC_USB_SYSTEMD` and an autologin root shell on tty1
 (proven on an M2 Max, 2026-08-23). `--rootfs` includes kernel modules, NetworkManager, `iwd`, Asahi mesa,
 asahi-audio, speakersafetyd, gum, `hid_apple fnmode=1`, and
 `appledrm show_notch=1`. Vendor firmware is copied from the internal ESP
-at boot. Still not the Omarchy desktop. Wi-Fi: nmtui Rescan until SSIDs appear, then Activate or
+at boot. Still not the Omarchy desktop. On the live USB, `omarchy-mac-install`
+clones this disk onto another USB (refuses NVMe and APFS). First cut is
+whole-disk `dd`, not LUKS or Omarchy. Wi-Fi: nmtui Rescan until SSIDs appear, then Activate or
 `nmcli device wifi connect 'SSID' password 'PSK'` (nmcli failed before a
 scan, succeeded after). `gum --version` and `fnmode=1` proven on metal.
 Default `--usb` without `--rootfs` still hangs at busybox pid 1.

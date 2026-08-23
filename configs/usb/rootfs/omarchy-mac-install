@@ -1,0 +1,80 @@
+#!/bin/bash
+# Clone this live USB onto another disk. Refuses NVMe, APFS, iBoot, Recovery,
+# and the live medium itself. First cut: whole-disk dd. Not an Omarchy install.
+set -euo pipefail
+
+APPLE_APFS=7c3457ef-0000-11aa-aa11-00306543ecac
+APPLE_IBOOT=69646961-6700-11aa-aa11-00306543ecac
+APPLE_RECOVERY=52637672-7900-11aa-aa11-00306543ecac
+# 4GiB: 512MiB ESP + 3GiB payload plus slack
+MIN_BYTES=$((4 * 1024 * 1024 * 1024))
+
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+[[ $EUID == 0 ]] || fail "run as root"
+command -v gum >/dev/null || fail "gum not found"
+command -v dd >/dev/null || fail "dd not found"
+
+live_partition=""
+if [[ -e /dev/disk/by-label/OMARCHYLIVE ]]; then
+  live_partition=$(readlink -f /dev/disk/by-label/OMARCHYLIVE)
+fi
+[[ -n $live_partition ]] || fail "no OMARCHYLIVE volume — plug in the live USB"
+live_disk=$(lsblk -no PKNAME "$live_partition")
+[[ -n $live_disk ]] || fail "could not find the disk that holds OMARCHYLIVE"
+source_dev=/dev/$live_disk
+
+disk_has_apple_partitions() {
+  local disk=$1 type
+  while read -r type; do
+    [[ -z $type ]] && continue
+    type=${type,,}
+    [[ $type == "$APPLE_APFS" || $type == "$APPLE_IBOOT" || $type == "$APPLE_RECOVERY" ]] && return 0
+  done < <(lsblk -n -o PARTTYPE "/dev/$disk")
+  return 1
+}
+
+candidates=()
+while read -r name size model tran; do
+  [[ -z $name ]] && continue
+  [[ $name == nvme* ]] && continue
+  [[ $name == "$live_disk" ]] && continue
+  [[ ${tran:-} == nvme ]] && continue
+  disk_has_apple_partitions "$name" && continue
+  bytes=$(lsblk -bn -o SIZE "/dev/$name")
+  (( bytes >= MIN_BYTES )) || continue
+  candidates+=("$name  $size  ${model:-disk}  ${tran:-}")
+done < <(lsblk -dn -o NAME,SIZE,MODEL,TRAN)
+
+(( ${#candidates[@]} > 0 )) || fail "no eligible disks (need >=4GiB USB/SCSI, not NVMe, not the live USB)"
+
+choice=$(printf '%s\n' "${candidates[@]}" | gum choose --header "Destroy ALL data on which disk?")
+[[ -n $choice ]] || fail "cancelled"
+target_name=${choice%% *}
+target_dev=/dev/$target_name
+
+[[ $target_name == nvme* ]] && fail "refusing NVMe"
+[[ $target_name == "$live_disk" ]] && fail "refusing the live USB"
+disk_has_apple_partitions "$target_name" && fail "refusing a disk with APFS/iBoot/Recovery"
+
+gum confirm \
+  "This will DESTROY every partition on $target_dev (${choice#*  }). The live USB $source_dev is copied onto it. Continue?" \
+  || fail "cancelled"
+
+while read -r mountpoint; do
+  [[ -z $mountpoint ]] && continue
+  umount "$mountpoint" || true
+done < <(lsblk -ln -o MOUNTPOINT "$target_dev")
+sync
+
+printf '==> dd %s -> %s (whole disk clone)\n' "$source_dev" "$target_dev"
+dd if="$source_dev" of="$target_dev" bs=4M status=progress conv=fsync oflag=sync
+sync
+partprobe "$target_dev" 2>/dev/null || true
+
+if command -v sgdisk >/dev/null; then
+  sgdisk -e "$target_dev" || true
+fi
+
+printf '==> done. Unplug the live USB, cold-start, and boot the target the same way as the Lexar.\n'
+lsblk -o NAME,SIZE,FSTYPE,LABEL "$target_dev"
