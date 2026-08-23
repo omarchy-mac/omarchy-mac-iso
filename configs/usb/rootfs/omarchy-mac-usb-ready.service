@@ -1,0 +1,11 @@
+[Unit]
+Description=Announce Omarchy Mac USB systemd userspace
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/bash -c 'echo "==> OMARCHY_MAC_USB_SYSTEMD pid=$$" >/dev/console; echo "==> OMARCHY_MAC_USB_SYSTEMD pid=$$"'
+
+[Install]
+WantedBy=multi-user.target

@@ -64,15 +64,26 @@ run_hook() {
 
   echo "writable overlay" >"$NEW_ROOT/omarchy-mac-overlay-write"
 
-  if [ ! -x "$NEW_ROOT/sbin/init" ] || [ -L "$NEW_ROOT/sbin/init" ]; then
-    hang "omarchy-usb-live: /sbin/init missing or is a symlink"
+  if [ ! -x "$NEW_ROOT/sbin/init" ]; then
+    hang "omarchy-usb-live: /sbin/init missing"
   fi
-  if [ -L "$NEW_ROOT/bin/busybox" ]; then
+  if [ -e "$NEW_ROOT/bin/busybox" ] && [ -L "$NEW_ROOT/bin/busybox" ]; then
     hang "omarchy-usb-live: busybox is a symlink (switch_root would ENOENT)"
   fi
 
   echo "==> OMARCHY_MAC_USB_READY" >/dev/console
   echo "==> OMARCHY_MAC_USB_READY payload=$payload_dev marker=$(cat "$LIVE_MOUNT/$MARKER" 2>/dev/null)"
+
+  # Asahi vendor firmware was extracted from the internal ESP by the asahi
+  # hook. Carry it across switch_root so brcmfmac can associate in userspace.
+  if [ -d /lib/firmware/vendor ]; then
+    mkdir -p "$NEW_ROOT/lib/firmware/vendor"
+    cp -a /lib/firmware/vendor/. "$NEW_ROOT/lib/firmware/vendor/"
+  fi
+  if [ -d /vendorfw ]; then
+    mkdir -p "$NEW_ROOT/vendorfw"
+    cp -a /vendorfw/. "$NEW_ROOT/vendorfw/"
+  fi
 
   mkdir -p "$NEW_ROOT/proc" "$NEW_ROOT/sys" "$NEW_ROOT/dev" "$NEW_ROOT/run"
   mount --move /proc "$NEW_ROOT/proc" 2>/dev/null || mount -t proc proc "$NEW_ROOT/proc"

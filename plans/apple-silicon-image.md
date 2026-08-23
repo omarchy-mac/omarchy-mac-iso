@@ -45,7 +45,8 @@ Spikes live in `~/code/omarchy-mac-iso-spike/`. Reports:
 | Os-package zip, from source | Raw zip: `esp/` tree + `root.img` (size multiple of 4 KiB). Optional `boot.img`, `icon`. `fdcopy` onto `/dev/rdiskNsM`. No sparse format. `INSTALLER_DATA` / `REPO_BASE` is the supported third-party hook. `supported_fw` filters IPSW versions (`12.3`, `12.3.1`, `13.5`, `14.8.3`), not kernel features. |
 | Alarm size precedent is **Minimal**, not a desktop | Alarm Minimal `root.img` is 2,209,614,225 bytes; Desktop is 12.7 GB in a **1.88 GiB** zip. This machine's `@` subvolume is ~13 GB (`du -sx /` does not cross `@home`). A full Omarchy image will look like Desktop, not Minimal. GitHub Releases' 2 GiB per-file cap is tight. |
 
-Not yet proven on the stick: Wi-Fi association in the live environment, or an install `dd` onto a target disk. Overlay + `switch_root` into busybox pid 1 is done (2026-08-23).
+Not yet proven on the stick: an install `dd` onto a target disk. Overlay +
+`switch_root`, systemd userspace, and Wi-Fi association are done (2026-08-23).
 
 ## Architecture: one rootfs, two front doors
 
@@ -299,12 +300,18 @@ Native `./bin/omarchy-mac-iso-make --usb` on this Mac produces a GPT image
 (ESP + btrfs payload) that boots on metal (2026-08-23, payload partition
 not a `root.img` loop). Then the same builder in
 `docker --platform linux/arm64` from Arch Linux ARM with `[asahi-alarm]`
-and `[omarchy-aarch64]`, then CI. `builder/build-rootfs.sh` (S3) will replace
-the busybox tree on `@`.
+and `[omarchy-aarch64]`, then CI. `builder/build-rootfs.sh` (S3) replaces
+the busybox tree on `@` with Arch `base` / systemd.
 
 ### S3 — The rootfs artifact
 
-`builder/build-rootfs.sh`: pacstrap → Asahi packages → the fork's package set →
+`builder/build-rootfs.sh` via `./bin/omarchy-mac-iso-make --usb --rootfs`
+(needs root, `arch-install-scripts`). First cut **proven on metal
+2026-08-23**: pacstrap Arch `base` onto `@`, `switch_root` into systemd,
+autologin root shell, `nmtui` + brcmfmac scan, then `ping www.google.com`.
+wlan0 is missing until nmtui Rescan; `nmcli … password` can still fail
+secrets-not-provided on iwd. Not the Omarchy desktop. Then Asahi packages →
+the fork's package set →
 provisioning with hardware-specific work that is *not* per-machine done at
 build time (audio stack, `fnmode`, notch modprobe) → defer keymap / user /
 hostname / anything that reads this panel to first boot or the installer →
@@ -346,7 +353,10 @@ GitHub Releases vs R2 vs split assets.
    2026-08-23: btrfs `OMARCHYLIVE` on `/dev/sda2`,
    `OMARCHY_MAC_USB_READY payload=/dev/sda2`, then
    `OMARCHY_MAC_USB_USERSPACE pid=1` with marker and overlay write.
-   Remaining: Wi-Fi in the live env.
+   `--usb --rootfs` Wi-Fi on metal 2026-08-23: nmtui Rescan then Activate
+   associated to flintstone; `ping www.google.com` succeeded. `nmcli
+   device wifi connect … password` still failed secrets-not-provided
+   (`brcmf join_pref -52`). Pixel USB tether enumerates as `enu1`/`cdc_ncm`.
 2. `./bin/omarchy-mac-iso-make --usb` produces a GPT ESP + payload image on
    this Mac and boots; `test/unit` green; `bash -n` over every script.
    Container still open.

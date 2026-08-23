@@ -77,9 +77,22 @@ On a machine that already runs `linux-asahi`:
 Writes `release/omarchy-mac-iso-usb/omarchy-mac-usb.img` — GPT with a FAT32
 ESP labelled `OMARCHYISO` (standalone GRUB, this host's `linux-asahi`,
 initramfs with `dwc3-apple`) and a btrfs payload labelled `OMARCHYLIVE`
-(subvol `@`, tiny busybox `/sbin/init` until S3). No root required. Copying
-files onto an existing FAT stick is not enough — the payload is its own
-partition.
+(subvol `@`, tiny busybox `/sbin/init`). No root required. Copying files
+onto an existing FAT stick is not enough — the payload is its own partition.
+
+S3 systemd userspace (not the Omarchy desktop) — needs root, `arch-install-scripts`:
+
+```
+sudo ./bin/omarchy-mac-iso-make --usb --rootfs
+```
+
+Success prints `OMARCHY_MAC_USB_SYSTEMD` and an autologin root shell on tty1
+(proven on an M2 Max, 2026-08-23). `--rootfs` includes kernel modules,
+NetworkManager, and `iwd`; vendor firmware is copied from the internal ESP
+at boot. Wi-Fi: open `nmtui`, Rescan if wlan is missing, then Activate
+(PSK works there after a scan; `nmcli device wifi connect … password`
+can still fail with "secrets not provided"). Default `--usb` without
+`--rootfs` still hangs at busybox pid 1.
 
 Flash (destroys the target stick):
 
@@ -105,5 +118,7 @@ the stick should win automatically after a cold start.
 USB GRUB prints `OMARCHY USB GRUB (not the NVMe ESP)` and has one entry.
 Omarchy Linux / Advanced options means you are on NVMe.
 
-Success prints `OMARCHY_MAC_USB_READY`, then `OMARCHY_MAC_USB_USERSPACE pid=1`,
-and hangs. This is not yet a full Omarchy desktop or installer.
+Busybox `--usb` prints `OMARCHY_MAC_USB_READY`, then
+`OMARCHY_MAC_USB_USERSPACE pid=1`, and hangs. `--usb --rootfs` prints
+`OMARCHY_MAC_USB_SYSTEMD` and drops to a root shell. Neither is a full
+Omarchy desktop or installer.
