@@ -1,0 +1,18 @@
+#!/bin/sh
+# Pid 1 after switch_root onto the USB overlay. Hang so the screen can
+# be photographed. A full userspace (systemd / installer) is later.
+#
+# Initramfs PATH is /usr/bin; after switch_root our applets live in /bin.
+export PATH=/bin:/usr/bin
+
+msg() {
+  echo "==> $*" >/dev/console
+  echo "==> $*"
+}
+
+msg "OMARCHY_MAC_USB_USERSPACE pid=$$ marker=$(/bin/cat /omarchy-mac-live-ok 2>/dev/null) overlay=$(/bin/cat /omarchy-mac-overlay-write 2>/dev/null)"
+echo "userspace write" >/omarchy-mac-userspace
+
+while true; do
+  sleep 3600
+done
