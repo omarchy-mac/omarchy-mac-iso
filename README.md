@@ -90,10 +90,10 @@ Success prints `OMARCHY_MAC_USB_SYSTEMD` and an autologin root shell on tty1
 (proven on an M2 Max, 2026-08-23). `--rootfs` includes kernel modules, NetworkManager, `iwd`, Asahi mesa,
 asahi-audio, speakersafetyd, gum, `hid_apple fnmode=1`, and
 `appledrm show_notch=1`. Vendor firmware is copied from the internal ESP
-at boot. Still not the Omarchy desktop. Wi-Fi: open `nmtui`, Rescan if wlan is missing, then Activate
-(PSK works there after a scan; `nmcli device wifi connect … password`
-can still fail with "secrets not provided"). Default `--usb` without
-`--rootfs` still hangs at busybox pid 1.
+at boot. Still not the Omarchy desktop. Wi-Fi: nmtui Rescan until SSIDs appear, then Activate or
+`nmcli device wifi connect 'SSID' password 'PSK'` (nmcli failed before a
+scan, succeeded after). `gum --version` and `fnmode=1` proven on metal.
+Default `--usb` without `--rootfs` still hangs at busybox pid 1.
 
 Flash (destroys the target stick):
 

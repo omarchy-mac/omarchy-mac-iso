@@ -1,5 +1,6 @@
 Omarchy Mac live USB (systemd). Not the installer yet.
-Wi-Fi: nmtui — Rescan if the list is empty, then Activate.
+Wi-Fi: nmtui Rescan until SSIDs appear, then
+       nmtui Activate  or  nmcli device wifi connect 'SSID' password 'PSK'
 USB:   nmcli device connect enu1
 Check: cat /sys/module/hid_apple/parameters/fnmode   (want 1)
        gum --version
