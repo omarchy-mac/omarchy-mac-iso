@@ -285,15 +285,22 @@ bootflow select 0
 bootflow boot
 ```
 
-Still open before S4 is comfortable: overlay + `switch_root` into a tiny
-userspace, and `iwctl`/`NetworkManager` in that environment. Those can ride
-on the same stick.
+Overlay of USB `root.img` is proven on the `--usb` image (2026-08-23,
+`OMARCHY_MAC_USB_READY`, hang at `/new_root`). Still open before S4:
+`switch_root` into a tiny userspace, and `iwctl`/`NetworkManager` in that
+environment. Those can ride on the same stick.
+
+A warm reboot often leaves Type-C unenumerated in U-Boot (`0 Storage
+Device(s) found`). Cold start (shutdown, then power on) is required.
+`bootflow select` of the USB row can still load NVMe's
+`/EFI/BOOT/BOOTAA64.EFI`; load the stick's GRUB with `load usb` + `bootefi`.
 
 ### S2 — Populate the repo, and the builder container
 
-This document is the first real commit. Then `bin/omarchy-mac-iso-make` running
+Native `./bin/omarchy-mac-iso-make --usb` on this Mac produces a GPT image
+that boots on metal (2026-08-23). Then the same builder in
 `docker --platform linux/arm64` from Arch Linux ARM with `[asahi-alarm]` and
-`[omarchy-aarch64]`. Native on this Mac first, then CI.
+`[omarchy-aarch64]`, then CI.
 
 ### S3 — The rootfs artifact
 
@@ -335,10 +342,10 @@ GitHub Releases vs R2 vs split assets.
 ## Verification
 
 1. **S1 (done):** USB through U-Boot, vendor firmware present, `dwc3-apple`
-   bound, `root.img` loop-mounted. Remaining: Wi-Fi in the live env, overlay
-   + `switch_root`.
-2. `./bin/omarchy-mac-iso-make` produces `release/*.img` on this Mac; `test/unit`
-   green; `bash -n` over every script.
+   bound, `root.img` loop-mounted. Overlay on the `--usb` image: done
+   2026-08-23. Remaining: Wi-Fi in the live env, `switch_root`.
+2. `./bin/omarchy-mac-iso-make --usb` produces `release/*.img` on this Mac and
+   boots; `test/unit` green; `bash -n` over every script. Container still open.
 3. Install to an external disk, unencrypted then encrypted. Boot each. Confirm
    Wi-Fi, GPU/Quickshell bar at notch height, audio, media keys,
    `omarchy snapshot restore` sees `@factory`.

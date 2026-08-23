@@ -79,6 +79,7 @@ fi
 
 mkdir -p "$mnt/EFI/BOOT" "$mnt/grub"
 cp "$work/BOOTAA64.EFI" "$mnt/EFI/BOOT/BOOTAA64.EFI"
+cp "$repo_root/configs/usb/grub.cfg" "$mnt/EFI/BOOT/grub.cfg"
 cp "$repo_root/configs/usb/grub.cfg" "$mnt/grub/grub.cfg"
 cp /boot/vmlinuz-linux-asahi "$mnt/vmlinuz-linux-asahi"
 cp "$work/initramfs-omarchy-usb.img" "$mnt/initramfs-omarchy-usb.img"
