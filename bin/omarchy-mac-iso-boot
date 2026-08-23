@@ -1,0 +1,123 @@
+#!/bin/bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+log() { printf '==> %s\n' "$*" >&2; }
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+headless=0
+artifact_dir=""
+while (( $# > 0 )); do
+    case "$1" in
+        --headless) headless=1; shift ;;
+        -h|--help)
+            cat <<'EOF'
+Usage: omarchy-mac-iso-boot [artifact-dir] [--headless]
+
+Boots an omarchy-mac-iso M0 boot artifact under QEMU AArch64 UEFI.
+artifact-dir defaults to release/omarchy-mac-iso-arm64.
+
+Interactive mode (default) attaches your terminal to the guest console;
+quit with Ctrl-A X or a guest poweroff.
+
+--headless daemonizes QEMU and prints one line: a temp directory
+containing serial.log and qemu.pid. The caller tears the VM down.
+EOF
+            exit 0
+            ;;
+        *)
+            [[ -z "${artifact_dir}" ]] || fail "unexpected argument: $1"
+            artifact_dir="$1"
+            shift
+            ;;
+    esac
+done
+: "${artifact_dir:=${repo_root}/release/omarchy-mac-iso-arm64}"
+
+vmlinuz="${artifact_dir}/vmlinuz"
+initramfs="${artifact_dir}/initramfs.img"
+[[ -f "${vmlinuz}" && -f "${initramfs}" ]] \
+    || fail "no boot artifact at ${artifact_dir} (run bin/omarchy-mac-iso-make first)"
+
+command -v qemu-system-aarch64 >/dev/null 2>&1 \
+    || fail "qemu-system-aarch64 not found on PATH (macOS: brew install qemu; Debian/Ubuntu: apt install qemu-system-arm; Arch: pacman -S qemu-system-aarch64)"
+
+find_firmware() {
+    local code vars
+    if command -v brew >/dev/null 2>&1; then
+        local qemu_share
+        qemu_share="$(brew --prefix qemu 2>/dev/null || true)/share/qemu"
+        code="${qemu_share}/edk2-aarch64-code.fd"
+        vars="${qemu_share}/edk2-arm-vars.fd"
+        if [[ -f "${code}" && -f "${vars}" ]]; then
+            printf '%s\n%s\n' "${code}" "${vars}"
+            return 0
+        fi
+    fi
+    local candidates=(
+        "/usr/share/edk2-armvirt/aarch64/QEMU_EFI.fd:/usr/share/edk2-armvirt/aarch64/QEMU_VARS.fd"
+        "/usr/share/AAVMF/AAVMF_CODE.fd:/usr/share/AAVMF/AAVMF_VARS.fd"
+        "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd:/usr/share/qemu-efi-aarch64/QEMU_VARS.fd"
+    )
+    local pair
+    for pair in "${candidates[@]}"; do
+        code="${pair%%:*}"
+        vars="${pair##*:}"
+        if [[ -f "${code}" && -f "${vars}" ]]; then
+            printf '%s\n%s\n' "${code}" "${vars}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+firmware="$(find_firmware)" || fail "no AArch64 UEFI firmware found (macOS: brew install qemu bundles it; Debian/Ubuntu: apt install qemu-efi-aarch64; Arch: pacman -S edk2-armvirt)"
+code_fd="$(sed -n '1p' <<<"${firmware}")"
+vars_fd_src="$(sed -n '2p' <<<"${firmware}")"
+
+accel_args=()
+host_os="$(uname -s)"
+host_arch="$(uname -m)"
+if [[ "${host_os}" == "Darwin" && "${host_arch}" == "arm64" ]]; then
+    accel_args=(-accel hvf -cpu host)
+elif [[ "${host_os}" == "Linux" && "${host_arch}" == "aarch64" && -w /dev/kvm ]]; then
+    accel_args=(-accel kvm -cpu host)
+else
+    log "no native acceleration available on ${host_os}/${host_arch}; falling back to software emulation (tcg) — boot will be noticeably slower"
+    accel_args=(-accel tcg -cpu max)
+fi
+
+run_dir="$(mktemp -d "${TMPDIR:-/tmp}/omarchy-mac-iso-boot.XXXXXX")"
+vars_fd="${run_dir}/vars.fd"
+cp "${vars_fd_src}" "${vars_fd}"
+
+qemu_args=(
+    -machine virt
+    "${accel_args[@]}"
+    -m 512
+    -smp 2
+    -kernel "${vmlinuz}"
+    -initrd "${initramfs}"
+    -append "console=ttyAMA0"
+    -drive "if=pflash,format=raw,readonly=on,file=${code_fd}"
+    -drive "if=pflash,format=raw,file=${vars_fd}"
+    -nic none
+)
+
+if (( headless )); then
+    serial_log="${run_dir}/serial.log"
+    pidfile="${run_dir}/qemu.pid"
+    log "qemu-system-aarch64 ${qemu_args[*]} -serial file:${serial_log} -display none -daemonize -pidfile ${pidfile}"
+    qemu-system-aarch64 "${qemu_args[@]}" \
+        -serial "file:${serial_log}" \
+        -display none \
+        -daemonize \
+        -pidfile "${pidfile}"
+    printf '%s\n' "${run_dir}"
+else
+    trap 'rm -rf "${run_dir}"' EXIT
+    log "qemu-system-aarch64 ${qemu_args[*]} -serial mon:stdio -display none"
+    log "Ctrl-A X to quit"
+    qemu-system-aarch64 "${qemu_args[@]}" -serial mon:stdio -display none
+fi

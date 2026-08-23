@@ -1,0 +1,58 @@
+#!/bin/bash
+# Usage: test/smoke [timeout-seconds]   (default 60)
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+timeout="${1:-60}"
+marker="OMARCHY_MAC_ISO_READY"
+
+log() { printf '==> %s\n' "$*"; }
+
+log "Building ARM64 image"
+"${repo_root}/bin/omarchy-mac-iso-make"
+
+log "Booting with AArch64 UEFI"
+run_dir="$("${repo_root}/bin/omarchy-mac-iso-boot" --headless)"
+serial_log="${run_dir}/serial.log"
+pidfile="${run_dir}/qemu.pid"
+
+teardown() {
+    [[ -f "${pidfile}" ]] || return 0
+    local pid
+    pid="$(cat "${pidfile}" 2>/dev/null || true)"
+    [[ -n "${pid}" ]] || return 0
+    kill -0 "${pid}" 2>/dev/null || return 0
+    kill "${pid}" 2>/dev/null || true
+    sleep 1
+    kill -0 "${pid}" 2>/dev/null && kill -9 "${pid}" 2>/dev/null
+    return 0
+}
+trap teardown EXIT
+
+log "Waiting for live environment"
+found=0
+elapsed=0
+while (( elapsed < timeout )); do
+    if [[ -f "${serial_log}" ]] && grep -q "${marker}" "${serial_log}" 2>/dev/null; then
+        found=1
+        break
+    fi
+    sleep 1
+    elapsed=$(( elapsed + 1 ))
+done
+
+teardown
+
+if (( found )); then
+    log "${marker}"
+    rm -rf "${run_dir}"
+    echo "PASS"
+    exit 0
+fi
+
+printf 'error: timed out after %ss waiting for %s\n' "${timeout}" "${marker}" >&2
+printf 'error: serial log (%s):\n' "${serial_log}" >&2
+tail -n 40 "${serial_log}" >&2 2>/dev/null || echo "(no serial log written)" >&2
+printf 'error: run directory preserved for debugging: %s\n' "${run_dir}" >&2
+echo "FAIL"
+exit 1

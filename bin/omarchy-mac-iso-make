@@ -1,0 +1,66 @@
+#!/bin/bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+builder_dir="${repo_root}/builder"
+artifact_name="omarchy-mac-iso-arm64"
+out_dir="${repo_root}/release/${artifact_name}"
+
+log() { printf '==> %s\n' "$*"; }
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+check_deps() {
+    local missing=()
+    local cmd
+    for cmd in curl tar cpio gzip shasum install find; do
+        command -v "${cmd}" >/dev/null 2>&1 || missing+=("${cmd}")
+    done
+    if (( ${#missing[@]} > 0 )); then
+        fail "missing required tools: ${missing[*]} (these ship with macOS and most Linux distros; install via your package manager)"
+    fi
+}
+
+usage() {
+    cat <<'EOF'
+Usage: omarchy-mac-iso-make
+
+Builds the M0 ARM64 boot artifact (kernel + initramfs, not an ISO — see
+README.md) into release/omarchy-mac-iso-arm64/.
+EOF
+}
+
+main() {
+    if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+        usage
+        exit 0
+    fi
+
+    log "Checking build dependencies"
+    check_deps
+
+    log "Fetching pinned upstream artifacts"
+    local fetched minirootfs kernel_apk
+    fetched="$("${builder_dir}/fetch-upstream.sh")"
+    minirootfs="$(sed -n '1p' <<<"${fetched}")"
+    kernel_apk="$(sed -n '2p' <<<"${fetched}")"
+
+    log "Building live root filesystem and initramfs"
+    rm -rf "${out_dir}"
+    "${builder_dir}/build-initramfs.sh" "${minirootfs}" "${kernel_apk}" "${out_dir}"
+
+    local git_ref
+    git_ref="$(git -C "${repo_root}" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+    cat > "${out_dir}/BUILD_INFO" <<EOF
+artifact: ${artifact_name}
+built_from_ref: ${git_ref}
+source: $(basename "${minirootfs}"), $(basename "${kernel_apk}")
+contract: kernel + gzip'd newc cpio initramfs, boots under AArch64 UEFI via
+  qemu-system-aarch64 -machine virt -kernel vmlinuz -initrd initramfs.img
+  (see README.md — this is not an ISO)
+EOF
+
+    log "Writing ${out_dir#"${repo_root}"/}/{vmlinuz,initramfs.img}"
+    log "Build complete"
+}
+
+main "$@"

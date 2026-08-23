@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+mount -t proc none /proc
+mount -t sysfs none /sys
+mount -t devtmpfs none /dev
+
+echo "==> OMARCHY_MAC_ISO_READY" > /dev/console
+
+# Best-effort interactive shell for a human attached to a real console. Not
+# exec'd: if the console has no readable input (e.g. test/smoke's file-backed
+# serial log), the shell exits immediately on EOF, and PID 1 must survive
+# that or the kernel panics with "Attempted to kill init!".
+setsid sh -c 'exec sh </dev/console >/dev/console 2>&1' || true
+
+while true; do sleep 3600; done

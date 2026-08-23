@@ -1,0 +1,43 @@
+#!/bin/bash
+set -uo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+failures=0
+
+check() {
+    local desc="$1"; shift
+    if "$@" >/dev/null 2>&1; then
+        printf 'ok   - %s\n' "${desc}"
+    else
+        printf 'FAIL - %s\n' "${desc}"
+        failures=$(( failures + 1 ))
+    fi
+}
+
+for f in "${repo_root}"/bin/omarchy-mac-iso-* "${repo_root}"/builder/*.sh; do
+    check "bash -n $(basename "${f}")" bash -n "${f}"
+done
+
+check "sh -n init" sh -n "${repo_root}/configs/initramfs/init"
+
+if command -v shellcheck >/dev/null 2>&1; then
+    for f in "${repo_root}"/bin/omarchy-mac-iso-* "${repo_root}"/builder/*.sh; do
+        check "shellcheck $(basename "${f}")" shellcheck "${f}"
+    done
+else
+    echo "skip - shellcheck not installed"
+fi
+
+# shellcheck source=../builder/versions.env
+source "${repo_root}/builder/versions.env"
+check "MINIROOTFS_SHA256 is 64 hex chars" bash -c "[[ '${MINIROOTFS_SHA256}' =~ ^[0-9a-f]{64}\$ ]]"
+check "KERNEL_PKG_SHA256 is 64 hex chars" bash -c "[[ '${KERNEL_PKG_SHA256}' =~ ^[0-9a-f]{64}\$ ]]"
+
+check "omarchy-mac-iso-make --help works offline" "${repo_root}/bin/omarchy-mac-iso-make" --help
+check "omarchy-mac-iso-boot --help works offline" "${repo_root}/bin/omarchy-mac-iso-boot" --help
+
+if (( failures > 0 )); then
+    echo "${failures} failure(s)"
+    exit 1
+fi
+echo "all unit checks passed"
