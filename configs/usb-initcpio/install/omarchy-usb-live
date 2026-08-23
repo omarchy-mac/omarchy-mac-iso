@@ -14,7 +14,7 @@ build() {
 
 help() {
   cat <<HELPEOF
-Find the USB volume labelled OMARCHYISO, loop-mount root.img, overlay a
+Find the btrfs payload labelled OMARCHYLIVE, mount subvol=@, overlay a
 tmpfs, and switch_root into /sbin/init on that overlay.
 HELPEOF
 }

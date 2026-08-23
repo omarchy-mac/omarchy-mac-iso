@@ -27,8 +27,8 @@ Usage: omarchy-mac-iso-make [--usb]
 Default: M0 QEMU artifact (Alpine linux-virt kernel + initramfs) into
 release/omarchy-mac-iso-arm64/. Does not boot a Mac.
 
---usb: native Apple Silicon GPT image (linux-asahi, GRUB ESP, root.img)
-into release/omarchy-mac-iso-usb/. Requires linux-asahi on the host.
+--usb: native Apple Silicon GPT image (linux-asahi, GRUB ESP, btrfs
+payload) into release/omarchy-mac-iso-usb/. Requires linux-asahi on the host.
 EOF
 }
 

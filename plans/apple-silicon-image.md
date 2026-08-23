@@ -68,14 +68,17 @@ image zipping to 1.88 GiB only works because the filesystem data is still
 compressible. Internal btrfs zstd makes the zip larger, not smaller. After
 install, new writes can compress.
 
-Two layouts that S1 showed both work. Prefer (a) for shipping; (b) is what the
-spike used.
+Two layouts that S1 showed both work. **(a) is what `--usb` ships**, proven on
+metal 2026-08-23 (`payload=/dev/sda2`, `OMARCHY_MAC_USB_USERSPACE pid=1`).
+(b) was the spike and the first busybox image.
 
 - **(a) Payload partition that *is* the btrfs image.** GPT: FAT32 ESP + one
-  Linux partition. Live boot mounts that partition read-only and overlays a
-  tmpfs, then `switch_root`. Install is `dd` of the partition onto the target.
+  Linux partition labelled `OMARCHYLIVE`, subvol `@`. Live boot mounts that
+  partition read-only and overlays a tmpfs, then `switch_root`. Install is
+  `dd` of the partition onto the target.
 - **(b) `root.img` as a file on the FAT ESP.** Live boot `losetup` + mount.
-  Fine for development; extra loop layer in production.
+  Fine for development; extra loop layer in production. A real Omarchy root
+  will not fit on the 512 MiB ESP.
 
 Live boot command line: `systemd.unit=omarchy-mac-install.target` so only the
 installer starts. Booting the default target later gives a live desktop for
@@ -293,9 +296,11 @@ bootefi ${kernel_addr_r} ${fdtcontroladdr}
 ### S2 — Populate the repo, and the builder container
 
 Native `./bin/omarchy-mac-iso-make --usb` on this Mac produces a GPT image
-that boots on metal (2026-08-23). Then the same builder in
-`docker --platform linux/arm64` from Arch Linux ARM with `[asahi-alarm]` and
-`[omarchy-aarch64]`, then CI.
+(ESP + btrfs payload) that boots on metal (2026-08-23, payload partition
+not a `root.img` loop). Then the same builder in
+`docker --platform linux/arm64` from Arch Linux ARM with `[asahi-alarm]`
+and `[omarchy-aarch64]`, then CI. `builder/build-rootfs.sh` (S3) will replace
+the busybox tree on `@`.
 
 ### S3 — The rootfs artifact
 
@@ -337,11 +342,14 @@ GitHub Releases vs R2 vs split assets.
 ## Verification
 
 1. **S1 (done):** USB through U-Boot, vendor firmware present, `dwc3-apple`
-   bound, `root.img` loop-mounted, overlay + `switch_root` into busybox pid 1
-   (`OMARCHY_MAC_USB_USERSPACE pid=1`, 2026-08-23). Remaining: Wi-Fi in the
-   live env.
-2. `./bin/omarchy-mac-iso-make --usb` produces `release/*.img` on this Mac and
-   boots; `test/unit` green; `bash -n` over every script. Container still open.
+   bound, overlay + `switch_root` into busybox pid 1. Layout (a) on metal
+   2026-08-23: btrfs `OMARCHYLIVE` on `/dev/sda2`,
+   `OMARCHY_MAC_USB_READY payload=/dev/sda2`, then
+   `OMARCHY_MAC_USB_USERSPACE pid=1` with marker and overlay write.
+   Remaining: Wi-Fi in the live env.
+2. `./bin/omarchy-mac-iso-make --usb` produces a GPT ESP + payload image on
+   this Mac and boots; `test/unit` green; `bash -n` over every script.
+   Container still open.
 3. Install to an external disk, unencrypted then encrypted. Boot each. Confirm
    Wi-Fi, GPU/Quickshell bar at notch height, audio, media keys,
    `omarchy snapshot restore` sees `@factory`.

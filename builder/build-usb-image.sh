@@ -1,7 +1,8 @@
 #!/bin/bash
 # Usage: build-usb-image.sh <out-dir>
 # Native Apple Silicon build: GPT disk image with a FAT ESP (GRUB, linux-asahi,
-# live initramfs, root.img). Unprivileged: udisks loop-mounts a FAT file.
+# live initramfs) plus a btrfs payload partition (label OMARCHYLIVE, subvol=@).
+# Unprivileged: udisks loop-mounts the filesystem images; dd into the GPT file.
 set -euo pipefail
 
 out_dir="$1"
@@ -32,8 +33,10 @@ trap cleanup EXIT
 
 mkdir -p "$work" "$out_dir"
 
-log "Building root.img"
-"$repo_root/builder/build-usb-rootimg.sh" "$work/root.img"
+log "Building btrfs payload (OMARCHYLIVE)"
+"$repo_root/builder/build-usb-rootimg.sh" "$work/payload.img"
+payload_bytes=$(stat -c %s "$work/payload.img")
+payload_mib=$(( (payload_bytes + 1024 * 1024 - 1) / (1024 * 1024) ))
 
 log "Building live initramfs (linux-asahi $kver, dwc3-apple)"
 mkinitcpio -n \
@@ -46,15 +49,17 @@ mkinitcpio -n \
 log "Building standalone GRUB"
 grub-mkstandalone -O arm64-efi \
   --fonts="" --locales="" --themes="" \
-  --install-modules="linux fat ext2 part_gpt search search_label search_fs_uuid echo normal configfile gzio reboot sleep" \
+  --install-modules="linux fat ext2 btrfs part_gpt search search_label search_fs_uuid echo normal configfile gzio reboot sleep" \
   --modules="part_gpt fat search search_label linux echo normal" \
   -o "$work/BOOTAA64.EFI" \
   "boot/grub/grub.cfg=$repo_root/configs/usb/grub.cfg"
 
-# 512 MiB FAT ESP, GPT wrapper with 1 MiB headroom.
-fat_kb=$((512 * 1024))
-fat_bytes=$((fat_kb * 1024))
-disk_bytes=$((fat_bytes + 2 * 1024 * 1024))
+# 512 MiB FAT ESP, then the btrfs payload, 1 MiB GPT head/tail.
+fat_mib=512
+fat_kb=$((fat_mib * 1024))
+esp_end_mib=$((1 + fat_mib))
+payload_end_mib=$((esp_end_mib + payload_mib))
+disk_bytes=$(( (payload_end_mib + 1) * 1024 * 1024 ))
 
 log "Formatting ESP"
 mkfs.vfat -F 32 -n OMARCHYISO -C "$work/esp.fat" "$fat_kb" >/dev/null
@@ -64,7 +69,6 @@ map_out="$(udisksctl loop-setup -f "$work/esp.fat" --no-user-interaction)"
 loop_dev="$(printf '%s\n' "$map_out" | grep -oE '/dev/loop[0-9]+')"
 [[ -n $loop_dev ]] || fail "udisksctl loop-setup did not print a loop device"
 
-# udisks often auto-mounts; wait for it
 mnt=""
 for _ in $(seq 1 20); do
   mnt="$(findmnt -n -o TARGET "$loop_dev" 2>/dev/null || true)"
@@ -83,26 +87,26 @@ cp "$repo_root/configs/usb/grub.cfg" "$mnt/EFI/BOOT/grub.cfg"
 cp "$repo_root/configs/usb/grub.cfg" "$mnt/grub/grub.cfg"
 cp /boot/vmlinuz-linux-asahi "$mnt/vmlinuz-linux-asahi"
 cp "$work/initramfs-omarchy-usb.img" "$mnt/initramfs-omarchy-usb.img"
-cp "$work/root.img" "$mnt/root.img"
 sync
 
 udisksctl unmount -b "$loop_dev" --no-user-interaction >/dev/null
 udisksctl loop-delete -b "$loop_dev" --no-user-interaction >/dev/null
 loop_dev=""
 
-log "Wrapping GPT disk image"
+log "Wrapping GPT disk image (ESP ${fat_mib}MiB + payload ${payload_mib}MiB)"
 disk="$out_dir/omarchy-mac-usb.img"
 rm -f "$disk"
 truncate -s "$disk_bytes" "$disk"
 parted -s "$disk" mklabel gpt \
-  mkpart ESP fat32 1MiB 513MiB \
-  set 1 esp on
+  mkpart ESP fat32 1MiB "${esp_end_mib}MiB" \
+  set 1 esp on \
+  mkpart payload btrfs "${esp_end_mib}MiB" "${payload_end_mib}MiB"
 dd if="$work/esp.fat" of="$disk" bs=1M seek=1 conv=notrunc status=none
+dd if="$work/payload.img" of="$disk" bs=1M seek="$esp_end_mib" conv=notrunc status=none
 
-# Loose copies for iterating onto an existing stick without dd.
 cp "$work/BOOTAA64.EFI" "$out_dir/BOOTAA64.EFI"
 cp "$work/initramfs-omarchy-usb.img" "$out_dir/initramfs-omarchy-usb.img"
-cp "$work/root.img" "$out_dir/root.img"
+cp "$work/payload.img" "$out_dir/payload.img"
 cp /boot/vmlinuz-linux-asahi "$out_dir/vmlinuz-linux-asahi"
 cp "$repo_root/configs/usb/grub.cfg" "$out_dir/grub.cfg"
 
@@ -111,9 +115,10 @@ cat > "$out_dir/BUILD_INFO" <<EOF
 artifact: omarchy-mac-usb
 built_from_ref: $git_ref
 kernel: linux-asahi $kver
-contract: GPT disk image, one FAT32 ESP labelled OMARCHYISO
+contract: GPT disk image, FAT32 ESP labelled OMARCHYISO + btrfs payload labelled OMARCHYLIVE (subvol=@)
   EFI/BOOT/BOOTAA64.EFI (grub-mkstandalone)
-  /vmlinuz-linux-asahi + /initramfs-omarchy-usb.img + /root.img
+  /vmlinuz-linux-asahi + /initramfs-omarchy-usb.img on the ESP
+  payload partition is the live root (not a root.img file on FAT)
 flash: dd if=omarchy-mac-usb.img of=/dev/sdX bs=4M status=progress conv=fsync
 EOF
 
