@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: MIT
 #
 # After asahi firmware + udev: mount the USB ESP, loop-mount root.img,
-# overlay a tmpfs, announce readiness. Pid 1 stays in the initramfs
-# (a real rootfs with /sbin/init is a later milestone).
+# overlay a tmpfs, switch_root into /sbin/init on that overlay.
 
 USB_LABEL="OMARCHYISO"
 USB_MOUNT="/run/omarchy-usb"
@@ -25,7 +24,7 @@ wait_for_usb() {
 }
 
 hang() {
-  echo "==> $*" > /dev/console
+  echo "==> $*" >/dev/console
   echo "==> $*"
   while true; do
     sleep 3600
@@ -78,10 +77,26 @@ run_hook() {
     hang "omarchy-usb-live: overlay mount failed"
   fi
 
-  echo "writable overlay" > "$NEW_ROOT/omarchy-mac-overlay-write"
+  echo "writable overlay" >"$NEW_ROOT/omarchy-mac-overlay-write"
 
-  echo "==> OMARCHY_MAC_USB_READY" > /dev/console
+  if [ ! -x "$NEW_ROOT/sbin/init" ] || [ -L "$NEW_ROOT/sbin/init" ]; then
+    hang "omarchy-usb-live: /sbin/init missing or is a symlink"
+  fi
+  if [ -L "$NEW_ROOT/bin/busybox" ]; then
+    hang "omarchy-usb-live: busybox is a symlink (switch_root would ENOENT)"
+  fi
+
+  echo "==> OMARCHY_MAC_USB_READY" >/dev/console
   echo "==> OMARCHY_MAC_USB_READY usb=$usb_dev loop=$loop_dev marker=$(cat "$LIVE_MOUNT/$MARKER" 2>/dev/null)"
 
-  hang "omarchy-usb-live: live overlay is at $NEW_ROOT (no switch_root yet)"
+  mkdir -p "$NEW_ROOT/proc" "$NEW_ROOT/sys" "$NEW_ROOT/dev" "$NEW_ROOT/run"
+  mount --move /proc "$NEW_ROOT/proc" 2>/dev/null || mount -t proc proc "$NEW_ROOT/proc"
+  mount --move /sys "$NEW_ROOT/sys" 2>/dev/null || mount -t sysfs sys "$NEW_ROOT/sys"
+  mount --move /dev "$NEW_ROOT/dev" 2>/dev/null || mount --bind /dev "$NEW_ROOT/dev"
+  mount --move /run "$NEW_ROOT/run" 2>/dev/null || true
+
+  echo "==> omarchy-usb-live: switch_root $NEW_ROOT /sbin/init" >/dev/console
+  exec switch_root "$NEW_ROOT" /sbin/init
+
+  hang "omarchy-usb-live: switch_root returned"
 }

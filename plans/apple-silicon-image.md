@@ -45,7 +45,7 @@ Spikes live in `~/code/omarchy-mac-iso-spike/`. Reports:
 | Os-package zip, from source | Raw zip: `esp/` tree + `root.img` (size multiple of 4 KiB). Optional `boot.img`, `icon`. `fdcopy` onto `/dev/rdiskNsM`. No sparse format. `INSTALLER_DATA` / `REPO_BASE` is the supported third-party hook. `supported_fw` filters IPSW versions (`12.3`, `12.3.1`, `13.5`, `14.8.3`), not kernel features. |
 | Alarm size precedent is **Minimal**, not a desktop | Alarm Minimal `root.img` is 2,209,614,225 bytes; Desktop is 12.7 GB in a **1.88 GiB** zip. This machine's `@` subvolume is ~13 GB (`du -sx /` does not cross `@home`). A full Omarchy image will look like Desktop, not Minimal. GitHub Releases' 2 GiB per-file cap is tight. |
 
-Not yet proven on the stick: Wi-Fi association in the live environment, overlay + `switch_root` into a writable userspace, or an install `dd` onto a target disk.
+Not yet proven on the stick: Wi-Fi association in the live environment, or an install `dd` onto a target disk. Overlay + `switch_root` into busybox pid 1 is done (2026-08-23).
 
 ## Architecture: one rootfs, two front doors
 
@@ -276,24 +276,19 @@ Triage, do not bulk-delete: keep `ipcfix/`, `malikpr/`, `upstream-pr/`,
 ### S1 — Hardware spike — **done 2026-08-22**
 
 USB through U-Boot, firmware from the internal ESP, `dwc3-apple` binds, loop
-mount of `root.img`. Commands that actually worked on this NVMe-first machine:
-
-```
-usb start
-bootflow scan -l usb
-bootflow select 0
-bootflow boot
-```
-
-Overlay of USB `root.img` is proven on the `--usb` image (2026-08-23,
-`OMARCHY_MAC_USB_READY`, hang at `/new_root`). Still open before S4:
-`switch_root` into a tiny userspace, and `iwctl`/`NetworkManager` in that
-environment. Those can ride on the same stick.
+mount of `root.img`. Overlay + `switch_root` into busybox pid 1 is proven on
+the `--usb` image (2026-08-23, `OMARCHY_MAC_USB_USERSPACE pid=1`). Still open
+before S4: `iwctl`/`NetworkManager` in that environment.
 
 A warm reboot often leaves Type-C unenumerated in U-Boot (`0 Storage
 Device(s) found`). Cold start (shutdown, then power on) is required.
 `bootflow select` of the USB row can still load NVMe's
-`/EFI/BOOT/BOOTAA64.EFI`; load the stick's GRUB with `load usb` + `bootefi`.
+`/EFI/BOOT/BOOTAA64.EFI`. Commands that worked on this NVMe-first machine:
+
+```
+load usb 0:1 ${kernel_addr_r} /EFI/BOOT/BOOTAA64.EFI
+bootefi ${kernel_addr_r} ${fdtcontroladdr}
+```
 
 ### S2 — Populate the repo, and the builder container
 
@@ -342,8 +337,9 @@ GitHub Releases vs R2 vs split assets.
 ## Verification
 
 1. **S1 (done):** USB through U-Boot, vendor firmware present, `dwc3-apple`
-   bound, `root.img` loop-mounted. Overlay on the `--usb` image: done
-   2026-08-23. Remaining: Wi-Fi in the live env, `switch_root`.
+   bound, `root.img` loop-mounted, overlay + `switch_root` into busybox pid 1
+   (`OMARCHY_MAC_USB_USERSPACE pid=1`, 2026-08-23). Remaining: Wi-Fi in the
+   live env.
 2. `./bin/omarchy-mac-iso-make --usb` produces `release/*.img` on this Mac and
    boots; `test/unit` green; `bash -n` over every script. Container still open.
 3. Install to an external disk, unencrypted then encrypted. Boot each. Confirm

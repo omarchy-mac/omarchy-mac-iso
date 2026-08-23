@@ -7,6 +7,7 @@ build() {
   add_binary /usr/bin/losetup
   add_binary /usr/bin/mount
   add_binary /usr/bin/umount
+  add_binary /usr/bin/switch_root
   add_full_dir /usr/share/asahi-scripts
   add_runscript
 }
@@ -14,6 +15,6 @@ build() {
 help() {
   cat <<HELPEOF
 Find the USB volume labelled OMARCHYISO, loop-mount root.img, overlay a
-tmpfs, print a readiness line, and keep pid 1 alive. Does not switch_root.
+tmpfs, and switch_root into /sbin/init on that overlay.
 HELPEOF
 }

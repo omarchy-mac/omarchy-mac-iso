@@ -102,5 +102,5 @@ the stick should win automatically after a cold start.
 USB GRUB prints `OMARCHY USB GRUB (not the NVMe ESP)` and has one entry.
 Omarchy Linux / Advanced options means you are on NVMe.
 
-Success prints `OMARCHY_MAC_USB_READY` and hangs in the initramfs with the
-overlay at `/new_root`. This is not yet a full Omarchy desktop or installer.
+Success prints `OMARCHY_MAC_USB_READY`, then `OMARCHY_MAC_USB_USERSPACE pid=1`,
+and hangs. This is not yet a full Omarchy desktop or installer.

@@ -40,6 +40,12 @@ check "omarchy-mac-iso-boot --help works offline" "${repo_root}/bin/omarchy-mac-
 check "usb grub.cfg finds initramfs-omarchy-usb.img" \
   grep -q initramfs-omarchy-usb.img "${repo_root}/configs/usb/grub.cfg"
 check "usb mkinitcpio lists dwc3_apple" grep -q dwc3_apple "${repo_root}/configs/usb-initcpio/mkinitcpio.conf"
+check "sh -n live-init" sh -n "${repo_root}/configs/usb/live-init"
+check "live-init sets PATH to /bin" grep -q 'PATH=/bin' "${repo_root}/configs/usb/live-init"
+check "usb hook execs switch_root" grep -q 'exec switch_root' \
+  "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-live"
+check "usb rootimg copies initcpio busybox" grep -q /usr/lib/initcpio/busybox \
+  "${repo_root}/builder/build-usb-rootimg.sh"
 
 if (( failures > 0 )); then
     echo "${failures} failure(s)"
