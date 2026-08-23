@@ -6,7 +6,7 @@ set -euo pipefail
 
 out="$1"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-payload_bytes=${OMARCHY_USB_PAYLOAD_BYTES:-$((2 * 1024 * 1024 * 1024))}
+payload_bytes=${OMARCHY_USB_PAYLOAD_BYTES:-$((3 * 1024 * 1024 * 1024))}
 
 log() { printf '==> %s\n' "$*" >&2; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -59,8 +59,9 @@ mkdir -p "$mnt/run" "$mnt/boot"
 mount -t tmpfs tmpfs "$mnt/run"
 mount -t tmpfs tmpfs "$mnt/boot"
 
-log "pacstrap base networkmanager iwd"
-pacstrap -c "$mnt" base networkmanager iwd
+log "pacstrap base networkmanager iwd mesa asahi-audio gum"
+pacstrap -c "$mnt" base networkmanager iwd mesa asahi-audio \
+  alsa-ucm-conf-asahi speakersafetyd pipewire-pulse gum
 
 umount "$mnt/boot"
 umount "$mnt/run"
@@ -88,9 +89,19 @@ install -d "$mnt/etc/NetworkManager/conf.d"
 install -m644 "$repo_root/configs/usb/rootfs/nm-live.conf" \
   "$mnt/etc/NetworkManager/conf.d/nm-live.conf"
 install -d -m700 "$mnt/etc/NetworkManager/system-connections"
+install -d "$mnt/etc/modprobe.d"
+install -m644 "$repo_root/configs/usb/modprobe.d/hid_apple.conf" \
+  "$mnt/etc/modprobe.d/hid_apple.conf"
+install -m644 "$repo_root/configs/usb/modprobe.d/asahi-notch.conf" \
+  "$mnt/etc/modprobe.d/asahi-notch.conf"
+install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-asahi-hw.service" \
+  "$mnt/etc/systemd/system/omarchy-mac-asahi-hw.service"
 
 systemctl --root="$mnt" enable omarchy-mac-usb-ready.service
+systemctl --root="$mnt" enable omarchy-mac-asahi-hw.service
 systemctl --root="$mnt" enable NetworkManager.service
+systemctl --root="$mnt" enable speakersafetyd.service
+systemctl --root="$mnt" --global enable pipewire.socket pipewire-pulse.socket wireplumber.service 2>/dev/null || true
 systemctl --root="$mnt" set-default multi-user.target
 
 [[ -x $mnt/sbin/init || -L $mnt/sbin/init ]] || fail "pacstrap did not install /sbin/init"

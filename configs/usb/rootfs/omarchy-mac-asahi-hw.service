@@ -1,0 +1,11 @@
+[Unit]
+Description=Set Asahi hid_apple fnmode and appledrm show_notch
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/bash -c 'echo 1 >/sys/module/hid_apple/parameters/fnmode 2>/dev/null; echo 1 >/sys/module/appledrm/parameters/show_notch 2>/dev/null; true'
+
+[Install]
+WantedBy=multi-user.target

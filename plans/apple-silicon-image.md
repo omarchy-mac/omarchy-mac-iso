@@ -310,8 +310,9 @@ the busybox tree on `@` with Arch `base` / systemd.
 2026-08-23**: pacstrap Arch `base` onto `@`, `switch_root` into systemd,
 autologin root shell, `nmtui` + brcmfmac scan, then `ping www.google.com`.
 wlan0 is missing until nmtui Rescan; `nmcli … password` can still fail
-secrets-not-provided on iwd. Not the Omarchy desktop. Then Asahi packages →
-the fork's package set →
+secrets-not-provided on iwd. Not the Omarchy desktop. Asahi mesa / asahi-audio / speakersafetyd / gum
+and `fnmode=1` / `show_notch=1` go in this payload (not `asahi-scripts`).
+Then the fork's package set →
 provisioning with hardware-specific work that is *not* per-machine done at
 build time (audio stack, `fnmode`, notch modprobe) → defer keymap / user /
 hostname / anything that reads this panel to first boot or the installer →
