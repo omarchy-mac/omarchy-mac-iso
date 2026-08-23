@@ -309,9 +309,12 @@ the busybox tree on `@` with Arch `base` / systemd.
 (needs root, `arch-install-scripts`). First cut **proven on metal
 2026-08-23**: pacstrap Arch `base` onto `@`, `switch_root` into systemd,
 autologin root shell, `nmtui` + brcmfmac scan, then `ping www.google.com`.
-wlan0 is missing until nmtui Rescan; `nmcli … password` can still fail
-secrets-not-provided on iwd. Not the Omarchy desktop. Then Asahi packages →
-the fork's package set →
+wlan0 is missing until nmtui Rescan; after that both nmtui Activate and
+`nmcli … password` have worked. `gum` 0.17.0 and `hid_apple fnmode=1`
+proven on metal. Not the Omarchy desktop. Asahi mesa / asahi-audio /
+speakersafetyd / gum and `fnmode=1` / `show_notch=1` go in this payload
+(not `asahi-scripts`).
+Then the fork's package set →
 provisioning with hardware-specific work that is *not* per-machine done at
 build time (audio stack, `fnmode`, notch modprobe) → defer keymap / user /
 hostname / anything that reads this panel to first boot or the installer →
@@ -353,10 +356,10 @@ GitHub Releases vs R2 vs split assets.
    2026-08-23: btrfs `OMARCHYLIVE` on `/dev/sda2`,
    `OMARCHY_MAC_USB_READY payload=/dev/sda2`, then
    `OMARCHY_MAC_USB_USERSPACE pid=1` with marker and overlay write.
-   `--usb --rootfs` Wi-Fi on metal 2026-08-23: nmtui Rescan then Activate
-   associated to flintstone; `ping www.google.com` succeeded. `nmcli
-   device wifi connect … password` still failed secrets-not-provided
-   (`brcmf join_pref -52`). Pixel USB tether enumerates as `enu1`/`cdc_ncm`.
+   `--usb --rootfs` on metal 2026-08-23: `gum` 0.17.0, `fnmode=1`, nmtui
+   Rescan (first scan may time out), then `nmcli device wifi connect`
+   associated and `ping www.google.com` succeeded (`brcmf join_pref -52`
+   is noise). Pixel USB tether enumerates as `enu1`/`cdc_ncm`.
 2. `./bin/omarchy-mac-iso-make --usb` produces a GPT ESP + payload image on
    this Mac and boots; `test/unit` green; `bash -n` over every script.
    Container still open.
