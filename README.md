@@ -65,3 +65,27 @@ on Linux aarch64 with `/dev/kvm`) and falls back to TCG otherwise.
 
 On smoke failure, the serial log is printed and the run directory is
 kept for debugging.
+
+## USB image (Apple Silicon host)
+
+On a machine that already runs `linux-asahi`:
+
+```
+./bin/omarchy-mac-iso-make --usb
+```
+
+Writes `release/omarchy-mac-iso-usb/omarchy-mac-usb.img` — GPT, one FAT32
+ESP labelled `OMARCHYISO`, standalone GRUB, this host's `linux-asahi`,
+an initramfs with `dwc3-apple`, and a tiny `root.img`. No root required.
+
+Flash (destroys the target stick):
+
+```
+sudo dd if=release/omarchy-mac-iso-usb/omarchy-mac-usb.img of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+Boot via U-Boot (`usb start`, `bootflow scan -l usb`, `bootflow select 0`,
+`bootflow boot` if NVMe already has Linux). A fresh UEFI-only Mac should
+take USB automatically. Success prints `OMARCHY_MAC_USB_READY` and hangs
+in the initramfs with the overlay at `/new_root`. This is not yet a full
+Omarchy desktop or installer.

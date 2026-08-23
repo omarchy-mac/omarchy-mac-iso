@@ -22,17 +22,42 @@ check_deps() {
 
 usage() {
     cat <<'EOF'
-Usage: omarchy-mac-iso-make
+Usage: omarchy-mac-iso-make [--usb]
 
-Builds the M0 ARM64 boot artifact (kernel + initramfs, not an ISO — see
-README.md) into release/omarchy-mac-iso-arm64/.
+Default: M0 QEMU artifact (Alpine linux-virt kernel + initramfs) into
+release/omarchy-mac-iso-arm64/. Does not boot a Mac.
+
+--usb: native Apple Silicon GPT image (linux-asahi, GRUB ESP, root.img)
+into release/omarchy-mac-iso-usb/. Requires linux-asahi on the host.
 EOF
 }
 
 main() {
-    if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-        usage
-        exit 0
+    local mode="qemu"
+    case "${1:-}" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --usb)
+            mode="usb"
+            shift
+            [[ "${1:-}" == "" ]] || fail "unexpected argument: $1"
+            ;;
+        "")
+            ;;
+        *)
+            fail "unexpected argument: $1"
+            ;;
+    esac
+
+    if [[ "${mode}" == "usb" ]]; then
+        log "Checking USB-image build dependencies"
+        local usb_dir="${repo_root}/release/omarchy-mac-iso-usb"
+        rm -rf "${usb_dir}"
+        "${builder_dir}/build-usb-image.sh" "${usb_dir}"
+        log "Build complete"
+        return 0
     fi
 
     log "Checking build dependencies"
