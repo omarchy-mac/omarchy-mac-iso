@@ -87,9 +87,11 @@ sudo ./bin/omarchy-mac-iso-make --usb --rootfs
 ```
 
 Success prints `OMARCHY_MAC_USB_SYSTEMD` and an autologin root shell on tty1
-(proven on an M2 Max, 2026-08-23). `--rootfs` now includes `linux-asahi`
-(modules), NetworkManager, and `iwd`; vendor firmware is copied from the
-internal ESP at boot. Use `nmtui` or `iwctl`. Default `--usb` without
+(proven on an M2 Max, 2026-08-23). `--rootfs` includes kernel modules,
+NetworkManager, and `iwd`; vendor firmware is copied from the internal ESP
+at boot. Wi-Fi: open `nmtui`, Rescan if wlan is missing, then Activate
+(PSK works there after a scan; `nmcli device wifi connect … password`
+can still fail with "secrets not provided"). Default `--usb` without
 `--rootfs` still hangs at busybox pid 1.
 
 Flash (destroys the target stick):
