@@ -352,8 +352,8 @@ GitHub Releases vs R2 vs split assets.
    `OMARCHY_MAC_USB_USERSPACE pid=1` with marker and overlay write.
    Remaining: Wi-Fi in the live env.
    `--usb --rootfs` on metal 2026-08-23: systemd userspace and a root
-   shell. `base` has no NetworkManager/`nmtui`; USB tethering is also
-   not in this payload.
+   shell. Next: NetworkManager/`iwd` plus linux-asahi modules and vendor
+   firmware carried across `switch_root`.
 2. `./bin/omarchy-mac-iso-make --usb` produces a GPT ESP + payload image on
    this Mac and boots; `test/unit` green; `bash -n` over every script.
    Container still open.

@@ -1,2 +1,4 @@
 Omarchy Mac live USB (systemd). Not the installer yet.
+Network: nmtui  or  iwctl station wlan0 scan
+
 

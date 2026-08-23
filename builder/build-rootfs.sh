@@ -47,8 +47,11 @@ mkfs.btrfs -q -L OMARCHYLIVE --csum crc32c \
 loop="$(losetup -f --show "$out")"
 mount -o subvol=@ "$loop" "$mnt"
 
-log "pacstrap base (systemd, no kernel — live kernel is on the ESP)"
-pacstrap -c "$mnt" base
+# Kernel is still loaded from the ESP; linux-asahi here is for modules
+# (brcmfmac, cdc_ether, …) after switch_root. Firmware is copied from the
+# initramfs at boot (internal ESP), not baked in.
+log "pacstrap base linux-asahi networkmanager iwd"
+pacstrap -c "$mnt" base linux-asahi networkmanager iwd asahi-scripts
 
 install -m644 "$repo_root/configs/usb/rootfs/issue" "$mnt/etc/issue"
 install -d "$mnt/etc/systemd/system"
@@ -63,7 +66,14 @@ printf 'LANG=C.UTF-8\n' >"$mnt/etc/locale.conf"
 : >"$mnt/etc/fstab"
 : >"$mnt/etc/machine-id"
 
+install -d "$mnt/etc/NetworkManager/conf.d"
+cat >"$mnt/etc/NetworkManager/conf.d/wifi_backend.conf" <<'EOF'
+[device]
+wifi.backend=iwd
+EOF
+
 systemctl --root="$mnt" enable omarchy-mac-usb-ready.service
+systemctl --root="$mnt" enable NetworkManager.service
 systemctl --root="$mnt" set-default multi-user.target
 
 [[ -x $mnt/sbin/init || -L $mnt/sbin/init ]] || fail "pacstrap did not install /sbin/init"

@@ -56,6 +56,10 @@ check "usb rootimg copies initcpio busybox" grep -q /usr/lib/initcpio/busybox \
   "${repo_root}/builder/build-usb-rootimg.sh"
 check "usb image builds a payload partition" grep -q 'mkpart payload' \
   "${repo_root}/builder/build-usb-image.sh"
+check "rootfs pacstraps networkmanager and iwd" grep -q networkmanager \
+  "${repo_root}/builder/build-rootfs.sh"
+check "usb hook copies vendor firmware" grep -q '/lib/firmware/vendor' \
+  "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-live"
 
 if (( failures > 0 )); then
     echo "${failures} failure(s)"
