@@ -307,8 +307,9 @@ the busybox tree on `@` with Arch `base` / systemd.
 `builder/build-rootfs.sh` via `./bin/omarchy-mac-iso-make --usb --rootfs`
 (needs root, `arch-install-scripts`). First cut **proven on metal
 2026-08-23**: pacstrap Arch `base` onto `@`, `switch_root` into systemd,
-autologin root shell. No NetworkManager/`nmtui`/`iwd` yet. Not the
-Omarchy desktop. Then Asahi packages → the fork's package set →
+autologin root shell, `nmtui` + brcmfmac scan. PSK via nmtui Activate
+does not reach iwd on this getty; use `nmcli device wifi connect`.
+Not the Omarchy desktop. Then Asahi packages → the fork's package set →
 provisioning with hardware-specific work that is *not* per-machine done at
 build time (audio stack, `fnmode`, notch modprobe) → defer keymap / user /
 hostname / anything that reads this panel to first boot or the installer →
@@ -351,9 +352,12 @@ GitHub Releases vs R2 vs split assets.
    `OMARCHY_MAC_USB_READY payload=/dev/sda2`, then
    `OMARCHY_MAC_USB_USERSPACE pid=1` with marker and overlay write.
    Remaining: Wi-Fi in the live env.
-   `--usb --rootfs` on metal 2026-08-23: systemd userspace and a root
-   shell. Next: NetworkManager/`iwd` plus linux-asahi modules and vendor
-   firmware carried across `switch_root`.
+   `--usb --rootfs` on metal 2026-08-23: systemd userspace, `nmtui`,
+   brcmfmac scan (SSIDs listed), Pixel USB tether as `enu1`/`cdc_ncm`.
+   nmtui Activate failed with "secrets were required but not provided"
+   even after entering the PSK (iwd backend on a getty, no secrets
+   agent). USB gadget was UP with no DHCPv4. Next: `auth-polkit=false`
+   and `nmcli device wifi connect`.
 2. `./bin/omarchy-mac-iso-make --usb` produces a GPT ESP + payload image on
    this Mac and boots; `test/unit` green; `bash -n` over every script.
    Container still open.

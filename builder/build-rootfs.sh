@@ -85,10 +85,9 @@ printf 'LANG=C.UTF-8\n' >"$mnt/etc/locale.conf"
 : >"$mnt/etc/machine-id"
 
 install -d "$mnt/etc/NetworkManager/conf.d"
-cat >"$mnt/etc/NetworkManager/conf.d/wifi_backend.conf" <<'EOF'
-[device]
-wifi.backend=iwd
-EOF
+install -m644 "$repo_root/configs/usb/rootfs/nm-live.conf" \
+  "$mnt/etc/NetworkManager/conf.d/nm-live.conf"
+install -d -m700 "$mnt/etc/NetworkManager/system-connections"
 
 systemctl --root="$mnt" enable omarchy-mac-usb-ready.service
 systemctl --root="$mnt" enable NetworkManager.service

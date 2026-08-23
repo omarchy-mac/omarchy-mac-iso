@@ -58,6 +58,8 @@ check "usb image builds a payload partition" grep -q 'mkpart payload' \
   "${repo_root}/builder/build-usb-image.sh"
 check "rootfs pacstraps networkmanager and iwd" grep -q networkmanager \
   "${repo_root}/builder/build-rootfs.sh"
+check "NM live conf disables polkit auth" grep -q 'auth-polkit=false' \
+  "${repo_root}/configs/usb/rootfs/nm-live.conf"
 check "usb hook copies vendor firmware" grep -q '/lib/firmware/vendor' \
   "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-live"
 
