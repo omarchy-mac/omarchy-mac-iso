@@ -299,14 +299,15 @@ Native `./bin/omarchy-mac-iso-make --usb` on this Mac produces a GPT image
 (ESP + btrfs payload) that boots on metal (2026-08-23, payload partition
 not a `root.img` loop). Then the same builder in
 `docker --platform linux/arm64` from Arch Linux ARM with `[asahi-alarm]`
-and `[omarchy-aarch64]`, then CI. `builder/build-rootfs.sh` (S3) will replace
-the busybox tree on `@`.
+and `[omarchy-aarch64]`, then CI. `builder/build-rootfs.sh` (S3) replaces
+the busybox tree on `@` with Arch `base` / systemd.
 
 ### S3 — The rootfs artifact
 
 `builder/build-rootfs.sh` via `./bin/omarchy-mac-iso-make --usb --rootfs`
-(needs root, `arch-install-scripts`). First cut: pacstrap Arch `base`
-(systemd, no kernel — live kernel stays on the ESP) onto `@`. Not the
+(needs root, `arch-install-scripts`). First cut **proven on metal
+2026-08-23**: pacstrap Arch `base` onto `@`, `switch_root` into systemd,
+autologin root shell. No NetworkManager/`nmtui`/`iwd` yet. Not the
 Omarchy desktop. Then Asahi packages → the fork's package set →
 provisioning with hardware-specific work that is *not* per-machine done at
 build time (audio stack, `fnmode`, notch modprobe) → defer keymap / user /
@@ -350,6 +351,9 @@ GitHub Releases vs R2 vs split assets.
    `OMARCHY_MAC_USB_READY payload=/dev/sda2`, then
    `OMARCHY_MAC_USB_USERSPACE pid=1` with marker and overlay write.
    Remaining: Wi-Fi in the live env.
+   `--usb --rootfs` on metal 2026-08-23: systemd userspace and a root
+   shell. `base` has no NetworkManager/`nmtui`; USB tethering is also
+   not in this payload.
 2. `./bin/omarchy-mac-iso-make --usb` produces a GPT ESP + payload image on
    this Mac and boots; `test/unit` green; `bash -n` over every script.
    Container still open.

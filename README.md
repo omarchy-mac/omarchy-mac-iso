@@ -86,8 +86,10 @@ S3 systemd userspace (not the Omarchy desktop) — needs root, `arch-install-scr
 sudo ./bin/omarchy-mac-iso-make --usb --rootfs
 ```
 
-Success prints `OMARCHY_MAC_USB_SYSTEMD` and an autologin root shell on tty1.
-Default `--usb` without `--rootfs` still hangs at busybox pid 1.
+Success prints `OMARCHY_MAC_USB_SYSTEMD` and an autologin root shell on tty1
+(proven on an M2 Max, 2026-08-23). `base` does not include NetworkManager,
+`nmtui`, or `iwd`. Default `--usb` without `--rootfs` still hangs at busybox
+pid 1.
 
 Flash (destroys the target stick):
 
@@ -113,5 +115,7 @@ the stick should win automatically after a cold start.
 USB GRUB prints `OMARCHY USB GRUB (not the NVMe ESP)` and has one entry.
 Omarchy Linux / Advanced options means you are on NVMe.
 
-Success prints `OMARCHY_MAC_USB_READY`, then `OMARCHY_MAC_USB_USERSPACE pid=1`,
-and hangs. This is not yet a full Omarchy desktop or installer.
+Busybox `--usb` prints `OMARCHY_MAC_USB_READY`, then
+`OMARCHY_MAC_USB_USERSPACE pid=1`, and hangs. `--usb --rootfs` prints
+`OMARCHY_MAC_USB_SYSTEMD` and drops to a root shell. Neither is a full
+Omarchy desktop or installer.
