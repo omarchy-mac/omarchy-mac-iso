@@ -78,6 +78,10 @@ install -d "$mnt/etc/systemd/system"
 install -d "$mnt/usr/local/sbin"
 install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-install" \
   "$mnt/usr/local/sbin/omarchy-mac-install"
+install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-disk.sh" \
+  "$mnt/usr/local/share/omarchy-mac-iso/omarchy-mac-disk.sh"
+install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-disk.sh" \
+  "$mnt/usr/local/sbin/omarchy-mac-disk.sh"
 install -d "$mnt/usr/local/share/omarchy-mac-iso/initcpio/hooks"
 install -d "$mnt/usr/local/share/omarchy-mac-iso/initcpio/install"
 install -m644 "$repo_root/configs/usb-initcpio/mkinitcpio-install.conf" \

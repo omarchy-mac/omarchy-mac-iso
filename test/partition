@@ -1,0 +1,82 @@
+#!/bin/bash
+# Unprivileged GPT tests for free-space install. Uses an image file, not NVMe.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../configs/usb/rootfs/omarchy-mac-disk.sh
+source "${repo_root}/configs/usb/rootfs/omarchy-mac-disk.sh"
+
+failures=0
+check() {
+  local desc=$1
+  shift
+  if bash -c "$*"; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n' "$desc"
+    failures=$((failures + 1))
+  fi
+}
+
+img=$(mktemp)
+cleanup() { rm -f "$img"; }
+trap cleanup EXIT
+
+truncate -s 8G "$img"
+parted -s "$img" mklabel gpt \
+  mkpart iBoot 1MiB 501MiB \
+  mkpart APFS 501MiB 2501MiB \
+  mkpart ESP 2501MiB 3001MiB \
+  mkpart Recovery 6500MiB 8191MiB
+parted -s "$img" type 1 "$APPLE_IBOOT"
+parted -s "$img" type 2 "$APPLE_APFS"
+parted -s "$img" type 4 "$APPLE_RECOVERY"
+
+region=$(largest_free_region "$img")
+read -r hole_start hole_size <<<"$region"
+check "largest_free_region finds a hole" "[[ -n '$region' ]]"
+check "hole is at least 2GiB" "(( $hole_size >= 2048 ))"
+check "hole starts after ESP" "(( $hole_start >= 3000 ))"
+
+parted -s "$img" mkpart root btrfs "${hole_start}MiB" "$((hole_start + 2000))MiB"
+
+dump_after=$(sfdisk --dump "$img")
+check "iBoot type unchanged" "grep -qi '$APPLE_IBOOT' <<<'$(printf '%s' "$dump_after")'"
+check "APFS type unchanged" "grep -qi '$APPLE_APFS' <<<'$(printf '%s' "$dump_after")'"
+check "Recovery type unchanged" "grep -qi '$APPLE_RECOVERY' <<<'$(printf '%s' "$dump_after")'"
+
+parted -s "$img" rm 5
+part_count=$(parted -s "$img" print | awk '/^[[:space:]]*[1-9]/ { n++ } END { print n+0 }')
+check "rollback leaves 4 partitions" "(( $part_count == 4 ))"
+dump_rolled=$(sfdisk --dump "$img")
+check "iBoot type survives rollback" "grep -qi '$APPLE_IBOOT' <<<'$(printf '%s' "$dump_rolled")'"
+
+img_grow=$(mktemp)
+truncate -s 4G "$img_grow"
+parted -s "$img_grow" mklabel gpt mkpart payload 1MiB 100%
+truncate -s 8G "$img_grow"
+grow_gpt_to_device "$img_grow"
+region=$(largest_free_region "$img_grow")
+read -r gs gsz <<<"$region"
+read -r gs gsz ge <<<"$(clamp_free_region "$gs" "$gsz" "$(device_mib "$img_grow")")"
+check "grown image has a hole" "(( $gsz >= 2048 ))"
+parted -s "$img_grow" mkpart root btrfs "${gs}MiB" "${ge}MiB"
+check "mkpart in grown image hole succeeds" "parted -s '$img_grow' print | grep -q root"
+rm -f "$img_grow"
+
+img2=$(mktemp)
+truncate -s 2G "$img2"
+parted -s "$img2" mklabel gpt mkpart full 1MiB 100%
+if largest_free_region "$img2" >/dev/null; then
+  printf 'FAIL - no-hole disk should not report a usable region\n'
+  failures=$((failures + 1))
+else
+  printf 'ok   - no-hole disk reports no usable region\n'
+fi
+rm -f "$img2"
+
+if (( failures > 0 )); then
+  echo "${failures} partition test failure(s)"
+  exit 1
+fi
+echo "partition tests passed"

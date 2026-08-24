@@ -53,8 +53,11 @@ booted live USB the same day: 14.5G stick → Lexar; U-Boot skipped
 `switch_root`, systemd userspace, and Wi-Fi association are done
 (2026-08-23). Partition install (ESP + persistent USB root, no overlay) is proven on
 metal (2026-08-24): 14.5G stick, GRUB `Omarchy Mac (USB root)`,
-`omarchy-usb-wait` mounted the new UUID, hostname `omarchy-mac`. Not yet:
-LUKS, Omarchy packages, or install onto internal NVMe.
+`omarchy-usb-wait` mounted the new UUID, hostname `omarchy-mac`. Free-space install is proven on the Lexar hole (2026-08-24): live
+partitions kept, `OMARCHYROOT` 11.4G. Wipe-install 14.5G stick booted
+warm, `root@omarchy-mac`, nmtui Rescan then `ping www.google.com`. This
+NVMe still has no hole — shrink APFS from macOS, never from Linux. Not
+yet: LUKS, Omarchy packages, or a real internal-disk install.
 
 ## Architecture: one rootfs, two front doors
 
