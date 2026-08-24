@@ -96,6 +96,10 @@ check "rootfs pacstraps dosfstools and grub" grep -q dosfstools \
   "${repo_root}/builder/build-rootfs.sh"
 check "usb image embeds grub-embed.cfg" grep -q grub-embed.cfg \
   "${repo_root}/builder/build-usb-image.sh"
+check "usb image builds install initramfs" grep -q initramfs-linux-asahi.img \
+  "${repo_root}/builder/build-usb-image.sh"
+check "install copies initramfs from live ESP" grep -q 'initramfs-linux-asahi.img on the live ESP' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "usb hook copies vendor firmware" grep -q '/lib/firmware/vendor' \
   "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-live"
 

@@ -192,15 +192,13 @@ clone_live_usb() {
 
 install_persistent_root() {
   local payload_bytes min_bytes source_esp esp_part root_part
-  local root_mnt esp_mnt live_esp_mnt kernel
+  local root_mnt esp_mnt live_esp_mnt
   local root_uuid esp_uuid grub_cfg work
 
   command -v parted >/dev/null || fail "parted not found"
   command -v mkfs.vfat >/dev/null || fail "mkfs.vfat not found — rebuild with --usb --rootfs (dosfstools)"
   command -v mkfs.btrfs >/dev/null || fail "btrfs-progs not found"
   command -v grub-mkstandalone >/dev/null || fail "grub-mkstandalone not found — rebuild with --usb --rootfs (grub)"
-  command -v mkinitcpio >/dev/null || fail "mkinitcpio not found"
-  [[ -f $SHARE/mkinitcpio-install.conf ]] || fail "missing $SHARE/mkinitcpio-install.conf — rebuild the live USB"
   [[ -f $SHARE/grub-embed-install.cfg ]] || fail "missing $SHARE/grub-embed-install.cfg — rebuild the live USB"
 
   payload_bytes=$(lsblk -dn -b -o SIZE "$live_partition")
@@ -264,16 +262,7 @@ install_persistent_root() {
   rm -f "$root_mnt/omarchy-mac-overlay-write"
   : >"$root_mnt/etc/machine-id"
 
-  kernel=$(uname -r)
-  printf '==> building USB-root initramfs (linux-asahi %s)\n' "$kernel"
   work=$(mktemp -d)
-  mkinitcpio -n \
-    -c "$SHARE/mkinitcpio-install.conf" \
-    -D /usr/lib/initcpio \
-    -D "$SHARE/initcpio" \
-    -k "$kernel" \
-    -g "$work/initramfs-linux-asahi.img"
-
   esp_mnt=$(mktemp -d)
   mount "$esp_part" "$esp_mnt"
   mkdir -p "$esp_mnt/EFI/BOOT" "$esp_mnt/grub"
@@ -286,13 +275,13 @@ install_persistent_root() {
     live_esp_mounted_by_us=1
   fi
   [[ -f $live_esp_mnt/vmlinuz-linux-asahi ]] || fail "no vmlinuz-linux-asahi on the live ESP"
+  [[ -f $live_esp_mnt/initramfs-linux-asahi.img ]] || fail "no initramfs-linux-asahi.img on the live ESP"
   cp "$live_esp_mnt/vmlinuz-linux-asahi" "$esp_mnt/vmlinuz-linux-asahi"
+  cp "$live_esp_mnt/initramfs-linux-asahi.img" "$esp_mnt/initramfs-linux-asahi.img"
   if (( live_esp_mounted_by_us == 1 )); then
     umount "$live_esp_mnt"
     rmdir "$live_esp_mnt"
   fi
-
-  cp "$work/initramfs-linux-asahi.img" "$esp_mnt/initramfs-linux-asahi.img"
 
   grub_cfg=$work/grub.cfg
   cat >"$grub_cfg" <<EOF

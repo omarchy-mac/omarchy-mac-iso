@@ -50,6 +50,14 @@ mkinitcpio -n \
   -k "$kver" \
   -g "$work/initramfs-omarchy-usb.img"
 
+log "Building install initramfs (USB root, no overlay)"
+mkinitcpio -n \
+  -c "$repo_root/configs/usb-initcpio/mkinitcpio-install.conf" \
+  -D /usr/lib/initcpio \
+  -D "$repo_root/configs/usb-initcpio" \
+  -k "$kver" \
+  -g "$work/initramfs-linux-asahi.img"
+
 log "Building standalone GRUB"
 grub-mkstandalone -O arm64-efi \
   --fonts="" --locales="" --themes="" \
@@ -92,6 +100,7 @@ cp "$repo_root/configs/usb/grub.cfg" "$mnt/grub/grub.cfg"
 : >"$mnt/omarchy-usb-live"
 cp /boot/vmlinuz-linux-asahi "$mnt/vmlinuz-linux-asahi"
 cp "$work/initramfs-omarchy-usb.img" "$mnt/initramfs-omarchy-usb.img"
+cp "$work/initramfs-linux-asahi.img" "$mnt/initramfs-linux-asahi.img"
 sync
 
 udisksctl unmount -b "$loop_dev" --no-user-interaction >/dev/null
@@ -111,6 +120,7 @@ dd if="$work/payload.img" of="$disk" bs=1M seek="$esp_end_mib" conv=notrunc stat
 
 cp "$work/BOOTAA64.EFI" "$out_dir/BOOTAA64.EFI"
 cp "$work/initramfs-omarchy-usb.img" "$out_dir/initramfs-omarchy-usb.img"
+cp "$work/initramfs-linux-asahi.img" "$out_dir/initramfs-linux-asahi.img"
 cp "$work/payload.img" "$out_dir/payload.img"
 cp /boot/vmlinuz-linux-asahi "$out_dir/vmlinuz-linux-asahi"
 cp "$repo_root/configs/usb/grub.cfg" "$out_dir/grub.cfg"
