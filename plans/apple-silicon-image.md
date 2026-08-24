@@ -45,8 +45,12 @@ Spikes live in `~/code/omarchy-mac-iso-spike/`. Reports:
 | Os-package zip, from source | Raw zip: `esp/` tree + `root.img` (size multiple of 4 KiB). Optional `boot.img`, `icon`. `fdcopy` onto `/dev/rdiskNsM`. No sparse format. `INSTALLER_DATA` / `REPO_BASE` is the supported third-party hook. `supported_fw` filters IPSW versions (`12.3`, `12.3.1`, `13.5`, `14.8.3`), not kernel features. |
 | Alarm size precedent is **Minimal**, not a desktop | Alarm Minimal `root.img` is 2,209,614,225 bytes; Desktop is 12.7 GB in a **1.88 GiB** zip. This machine's `@` subvolume is ~13 GB (`du -sx /` does not cross `@home`). A full Omarchy image will look like Desktop, not Minimal. GitHub Releases' 2 GiB per-file cap is tight. |
 
-Not yet proven on the stick: an install `dd` onto a target disk. Overlay +
-`switch_root`, systemd userspace, and Wi-Fi association are done (2026-08-23).
+USB-to-USB `dd` (through last partition, not whole disk) is proven from
+the installed Omarchy (2026-08-23): 14.9G Lexar → 14.5G stick, then that
+stick booted to autologin root, `gum 2.0.0`, `fnmode=1`. We have not run
+`omarchy-mac-install` from a booted live USB. Overlay + `switch_root`,
+systemd userspace, and Wi-Fi association are done (2026-08-23). Not yet:
+LUKS, Omarchy packages, or install onto internal NVMe.
 
 ## Architecture: one rootfs, two front doors
 
