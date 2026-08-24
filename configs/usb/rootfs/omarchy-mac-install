@@ -1,22 +1,25 @@
 #!/bin/bash
-# Clone this live USB onto another disk. Refuses NVMe, APFS, iBoot, Recovery,
-# and the live medium itself. Copies through the last partition (not the whole
-# source disk — a 16GB-class stick is often smaller than the live USB). When
-# this is the running live USB, keep the overlay lowerdir mounted. Not an
-# Omarchy install.
+# Clone this live USB, or install a persistent root onto another disk.
+# Refuses NVMe, APFS, iBoot, Recovery, and the live medium itself. Not
+# an Omarchy desktop install. No LUKS on this cut.
 set -euo pipefail
 
 APPLE_APFS=7c3457ef-0000-11aa-aa11-00306543ecac
 APPLE_IBOOT=69646961-6700-11aa-aa11-00306543ecac
 APPLE_RECOVERY=52637672-7900-11aa-aa11-00306543ecac
-# GPT backup header + entries after the last partition
 GPT_BACKUP_BYTES=$((34 * 512))
+ESP_MIB=512
+SHARE=/usr/local/share/omarchy-mac-iso
 
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID == 0 ]] || fail "run as root"
 command -v gum >/dev/null || fail "gum not found"
 command -v dd >/dev/null || fail "dd not found"
+
+# tty1 is also the kmsg console (live GRUB uses loglevel=7). printk
+# overwrites gum; drop console loglevel for the TUI.
+dmesg -n 1 2>/dev/null || true
 
 # Prefer the overlay lowerdir when we *are* the live USB. Two OMARCHYLIVE
 # labels (source + a previous clone) make by-label point at the wrong disk.
@@ -44,8 +47,6 @@ if overlay=$(overlay_payload_device); then
   [[ $overlay == "$live_partition" ]] && running_from_this_live_usb=1
 fi
 
-# Bytes covering every partition on $1, plus slack for a backup GPT.
-# lsblk -b SIZE is bytes; START is 512-byte sectors.
 copy_bytes_for_disk() {
   local disk=$1 name start size end=0
   while read -r name start size; do
@@ -90,76 +91,257 @@ payload_partition_on() {
   return 1
 }
 
-copy_bytes=$(copy_bytes_for_disk "$live_disk")
+esp_partition_on() {
+  local disk=$1 name fstype label
+  while read -r name fstype label; do
+    [[ $name == "$disk" ]] && continue
+    if [[ $label == OMARCHYISO || $fstype == vfat ]]; then
+      printf '/dev/%s\n' "$name"
+      return 0
+    fi
+  done < <(lsblk -ln -o NAME,FSTYPE,LABEL "/dev/$disk")
+  return 1
+}
 
-candidates=()
-while read -r name size model tran; do
-  [[ -z $name ]] && continue
-  [[ $name == nvme* ]] && continue
-  [[ $name == "$live_disk" ]] && continue
-  [[ ${tran:-} == nvme ]] && continue
-  disk_has_apple_partitions "$name" && continue
-  bytes=$(lsblk -dn -b -o SIZE "/dev/$name")
-  (( bytes >= copy_bytes )) || continue
-  candidates+=("$name  $size  ${model:-disk}  ${tran:-}")
-done < <(lsblk -dn -o NAME,SIZE,MODEL,TRAN)
-
-(( ${#candidates[@]} > 0 )) || fail "no eligible disks (need USB/SCSI >= ${copy_bytes} bytes, not NVMe, not the live USB)"
-
-choice=$(printf '%s\n' "${candidates[@]}" | gum choose --header "Destroy ALL data on which disk?")
-[[ -n $choice ]] || fail "cancelled"
-target_name=${choice%% *}
-target_dev=/dev/$target_name
-
-[[ $target_name == nvme* ]] && fail "refusing NVMe"
-[[ $target_name == "$live_disk" ]] && fail "refusing the live USB"
-disk_has_apple_partitions "$target_name" && fail "refusing a disk with APFS/iBoot/Recovery"
-target_bytes=$(lsblk -dn -b -o SIZE "$target_dev")
-(( target_bytes >= copy_bytes )) || fail "$target_dev is too small (need $copy_bytes bytes)"
-
-gum confirm \
-  "This will DESTROY every partition on $target_dev (${choice#*  }). $copy_bytes bytes from $source_dev are copied onto it. Continue?" \
-  || fail "cancelled"
-
-unmount_disk "$target_dev"
-if (( running_from_this_live_usb == 1 )); then
-  unmount_disk "$source_dev" 1
-else
-  unmount_disk "$source_dev"
-fi
-sync
-
-printf '==> dd %s -> %s (%s bytes, through last partition)\n' \
-  "$source_dev" "$target_dev" "$copy_bytes"
-dd if="$source_dev" of="$target_dev" bs=4M iflag=count_bytes count="$copy_bytes" \
-  status=progress conv=fsync oflag=sync
-sync
-partprobe "$target_dev" 2>/dev/null || true
-if command -v sgdisk >/dev/null; then
-  sgdisk -e "$target_dev" || true
-fi
-partprobe "$target_dev" 2>/dev/null || true
-command -v udevadm >/dev/null && udevadm settle --timeout=5 || true
-
-target_payload=""
-for _ in 1 2 3 4 5 6; do
-  target_payload=$(payload_partition_on "$target_name" || true)
-  [[ -n $target_payload ]] && break
-  sleep 1
-  partprobe "$target_dev" 2>/dev/null || true
-done
-if [[ -n $target_payload ]] && command -v btrfstune >/dev/null; then
-  printf '==> new btrfs UUID on %s (clone must not share the live fsid)\n' "$target_payload"
-  if command -v btrfs >/dev/null; then
-    btrfs device scan --forget "$target_payload" || true
+partition_node() {
+  local disk=$1 number=$2
+  if [[ -b /dev/${disk}${number} ]]; then
+    printf '/dev/%s%s\n' "$disk" "$number"
+  elif [[ -b /dev/${disk}p${number} ]]; then
+    printf '/dev/%sp%s\n' "$disk" "$number"
+  else
+    return 1
   fi
-  btrfstune -f -u "$target_payload"
-else
-  printf 'warning: no btrfs partition on %s yet; clone UUID was not rewritten\n' \
-    "$target_dev" >&2
-fi
+}
 
-printf '==> done. Unplug the live USB %s, cold-start, boot the target %s.\n' \
-  "$source_dev" "$target_dev"
-printf '    U-Boot: usb reset until usb storage lists that stick, then load usb 0:1 ...\n'
-lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID "$target_dev"
+wait_for_btrfs() {
+  local disk=$1 found="" i
+  for i in 1 2 3 4 5 6; do
+    found=$(payload_partition_on "$disk" || true)
+    [[ -n $found ]] && { printf '%s\n' "$found"; return 0; }
+    sleep 1
+    partprobe "/dev/$disk" 2>/dev/null || true
+  done
+  return 1
+}
+
+pick_target_disk() {
+  local min_bytes=$1 name size model tran bytes
+  candidates=()
+  while read -r name size model tran; do
+    [[ -z $name ]] && continue
+    [[ $name == nvme* ]] && continue
+    [[ $name == "$live_disk" ]] && continue
+    [[ ${tran:-} == nvme ]] && continue
+    disk_has_apple_partitions "$name" && continue
+    bytes=$(lsblk -dn -b -o SIZE "/dev/$name")
+    (( bytes >= min_bytes )) || continue
+    candidates+=("$name  $size  ${model:-disk}  ${tran:-}")
+  done < <(lsblk -dn -o NAME,SIZE,MODEL,TRAN)
+  (( ${#candidates[@]} > 0 )) || fail "no eligible disks (need USB/SCSI >= ${min_bytes} bytes, not NVMe, not the live USB)"
+  choice=$(printf '%s\n' "${candidates[@]}" | gum choose --header "Destroy ALL data on which disk?")
+  [[ -n $choice ]] || fail "cancelled"
+  target_name=${choice%% *}
+  target_dev=/dev/$target_name
+  [[ $target_name == nvme* ]] && fail "refusing NVMe"
+  [[ $target_name == "$live_disk" ]] && fail "refusing the live USB"
+  disk_has_apple_partitions "$target_name" && fail "refusing a disk with APFS/iBoot/Recovery"
+  printf '==> selected %s\n' "$target_dev"
+}
+
+clone_live_usb() {
+  local copy_bytes target_payload
+  copy_bytes=$(copy_bytes_for_disk "$live_disk")
+  pick_target_disk "$copy_bytes"
+  gum confirm \
+    "This will DESTROY every partition on $target_dev (${choice#*  }). $copy_bytes bytes from $source_dev are copied onto it. Continue?" \
+    || fail "cancelled"
+
+  unmount_disk "$target_dev"
+  if (( running_from_this_live_usb == 1 )); then
+    unmount_disk "$source_dev" 1
+  else
+    unmount_disk "$source_dev"
+  fi
+  sync
+
+  printf '==> dd %s -> %s (%s bytes, through last partition)\n' \
+    "$source_dev" "$target_dev" "$copy_bytes"
+  dd if="$source_dev" of="$target_dev" bs=4M iflag=count_bytes count="$copy_bytes" \
+    status=progress conv=fsync oflag=sync
+  sync
+  partprobe "$target_dev" 2>/dev/null || true
+  if command -v sgdisk >/dev/null; then
+    sgdisk -e "$target_dev" || true
+  fi
+  partprobe "$target_dev" 2>/dev/null || true
+  command -v udevadm >/dev/null && udevadm settle --timeout=5 || true
+
+  target_payload=$(wait_for_btrfs "$target_name" || true)
+  if [[ -n $target_payload ]] && command -v btrfstune >/dev/null; then
+    printf '==> new btrfs UUID on %s (clone must not share the live fsid)\n' "$target_payload"
+    if command -v btrfs >/dev/null; then
+      btrfs device scan --forget "$target_payload" || true
+    fi
+    btrfstune -f -u "$target_payload"
+  else
+    printf 'warning: no btrfs partition on %s yet; clone UUID was not rewritten\n' \
+      "$target_dev" >&2
+  fi
+
+  printf '==> done. Unplug the live USB %s, cold-start, boot the target %s.\n' \
+    "$source_dev" "$target_dev"
+  printf '    U-Boot: usb reset until usb storage lists that stick, then load usb 0:1 ...\n'
+  lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID "$target_dev"
+}
+
+install_persistent_root() {
+  local payload_bytes min_bytes source_esp esp_part root_part
+  local root_mnt esp_mnt live_esp_mnt
+  local root_uuid esp_uuid grub_cfg work
+
+  command -v parted >/dev/null || fail "parted not found"
+  command -v mkfs.vfat >/dev/null || fail "mkfs.vfat not found — rebuild with --usb --rootfs (dosfstools)"
+  command -v mkfs.btrfs >/dev/null || fail "btrfs-progs not found"
+  command -v grub-mkstandalone >/dev/null || fail "grub-mkstandalone not found — rebuild with --usb --rootfs (grub)"
+  [[ -f $SHARE/grub-embed-install.cfg ]] || fail "missing $SHARE/grub-embed-install.cfg — rebuild the live USB"
+
+  payload_bytes=$(lsblk -dn -b -o SIZE "$live_partition")
+  min_bytes=$(( ESP_MIB * 1024 * 1024 + payload_bytes + 64 * 1024 * 1024 ))
+  pick_target_disk "$min_bytes"
+  printf '==> confirm DESTROY of %s (arrow keys, then enter)\n' "$target_dev"
+  gum confirm \
+    "DESTROY $target_dev (${choice#*  }) and install a persistent USB root (no overlay, no LUKS)?" \
+    || fail "cancelled"
+  printf '==> confirmed\n'
+
+  source_esp=$(esp_partition_on "$live_disk" || true)
+  [[ -n $source_esp ]] || fail "no ESP on the live USB $source_dev"
+
+  unmount_disk "$target_dev"
+  if (( running_from_this_live_usb == 1 )); then
+    unmount_disk "$source_dev" 1
+  fi
+  sync
+
+  printf '==> partitioning %s (512MiB ESP + btrfs root)\n' "$target_dev"
+  wipefs -a "$target_dev" 2>/dev/null || true
+  parted -s "$target_dev" mklabel gpt \
+    mkpart ESP fat32 1MiB "$((ESP_MIB + 1))MiB" \
+    set 1 esp on \
+    mkpart root btrfs "$((ESP_MIB + 1))MiB" 100%
+  partprobe "$target_dev" 2>/dev/null || true
+  command -v udevadm >/dev/null && udevadm settle --timeout=5 || true
+  sleep 1
+
+  esp_part=$(partition_node "$target_name" 1) || fail "ESP partition did not appear on $target_dev"
+  root_part=$(partition_node "$target_name" 2) || fail "root partition did not appear on $target_dev"
+
+  printf '==> formatting ESP %s\n' "$esp_part"
+  mkfs.vfat -F 32 -n OMARCHYBOOT "$esp_part"
+
+  printf '==> copying payload %s -> %s\n' "$live_partition" "$root_part"
+  dd if="$live_partition" of="$root_part" bs=4M status=progress conv=fsync oflag=sync
+  sync
+  partprobe "$target_dev" 2>/dev/null || true
+  command -v udevadm >/dev/null && udevadm settle --timeout=5 || true
+
+  root_mnt=$(mktemp -d)
+  mount -o subvol=@ "$root_part" "$root_mnt"
+  printf '==> btrfs resize max on %s\n' "$root_part"
+  btrfs filesystem resize max "$root_mnt"
+  btrfs filesystem label "$root_mnt" OMARCHYROOT
+  umount "$root_mnt"
+
+  if command -v btrfs >/dev/null; then
+    btrfs device scan --forget "$root_part" || true
+  fi
+  btrfstune -f -u "$root_part"
+  mount -o subvol=@ "$root_part" "$root_mnt"
+
+  root_uuid=$(blkid -s UUID -o value "$root_part")
+  [[ -n $root_uuid ]] || fail "no UUID on $root_part after btrfstune"
+
+  printf 'UUID=%s / btrfs subvol=@,compress=zstd:1 0 0\n' "$root_uuid" >"$root_mnt/etc/fstab"
+  printf 'UUID=%s /home btrfs subvol=@home,compress=zstd:1 0 0\n' "$root_uuid" >>"$root_mnt/etc/fstab"
+  printf 'UUID=%s /var/log btrfs subvol=@log,compress=zstd:1 0 0\n' "$root_uuid" >>"$root_mnt/etc/fstab"
+  printf 'omarchy-mac\n' >"$root_mnt/etc/hostname"
+  cat >"$root_mnt/etc/issue" <<'EOF'
+Omarchy Mac USB root (not live, not the desktop).
+Wi-Fi: nmtui Rescan, then Activate.
+EOF
+  rm -f "$root_mnt/omarchy-mac-overlay-write"
+  : >"$root_mnt/etc/machine-id"
+
+  work=$(mktemp -d)
+  esp_mnt=$(mktemp -d)
+  mount "$esp_part" "$esp_mnt"
+  mkdir -p "$esp_mnt/EFI/BOOT" "$esp_mnt/grub"
+
+  live_esp_mnt=$(findmnt -n -o TARGET "$source_esp" || true)
+  live_esp_mounted_by_us=0
+  if [[ -z $live_esp_mnt ]]; then
+    live_esp_mnt=$(mktemp -d)
+    mount -o ro "$source_esp" "$live_esp_mnt"
+    live_esp_mounted_by_us=1
+  fi
+  [[ -f $live_esp_mnt/vmlinuz-linux-asahi ]] || fail "no vmlinuz-linux-asahi on the live ESP"
+  [[ -f $live_esp_mnt/initramfs-linux-asahi.img ]] || fail "no initramfs-linux-asahi.img on the live ESP"
+  cp "$live_esp_mnt/vmlinuz-linux-asahi" "$esp_mnt/vmlinuz-linux-asahi"
+  # Unique name: NVMe ESP also has initramfs-linux-asahi.img (LUKS).
+  cp "$live_esp_mnt/initramfs-linux-asahi.img" "$esp_mnt/initramfs-omarchy-usb-root.img"
+  if (( live_esp_mounted_by_us == 1 )); then
+    umount "$live_esp_mnt"
+    rmdir "$live_esp_mnt"
+  fi
+
+  grub_cfg=$work/grub.cfg
+  cat >"$grub_cfg" <<EOF
+echo '========================================'
+echo '  OMARCHY USB INSTALL (not live, not NVMe)'
+echo '========================================'
+set timeout=8
+set default=0
+
+search --no-floppy --file /omarchy-usb-install --set=root
+
+menuentry 'Omarchy Mac (USB root)' {
+  linux /vmlinuz-linux-asahi root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
+  initrd /initramfs-omarchy-usb-root.img
+}
+EOF
+  cp "$grub_cfg" "$esp_mnt/grub/grub.cfg"
+  cp "$grub_cfg" "$esp_mnt/EFI/BOOT/grub.cfg"
+  : >"$esp_mnt/omarchy-usb-install"
+
+  grub-mkstandalone -O arm64-efi \
+    --fonts="" --locales="" --themes="" \
+    --install-modules="linux fat ext2 btrfs part_gpt search search_label search_fs_uuid search_fs_file echo normal configfile gzio reboot sleep" \
+    --modules="part_gpt fat search search_fs_file configfile linux echo normal" \
+    -o "$esp_mnt/EFI/BOOT/BOOTAA64.EFI" \
+    "boot/grub/grub.cfg=$SHARE/grub-embed-install.cfg"
+
+  esp_uuid=$(blkid -s UUID -o value "$esp_part")
+  printf 'UUID=%s /boot vfat defaults,fmask=0133,dmask=0022 0 2\n' "$esp_uuid" >>"$root_mnt/etc/fstab"
+
+  sync
+  umount "$esp_mnt"
+  umount "$root_mnt"
+  rm -rf "$esp_mnt" "$root_mnt" "$work"
+
+  printf '==> done. Unplug the live USB %s, cold-start, boot the installed disk %s.\n' \
+    "$source_dev" "$target_dev"
+  printf '    U-Boot: usb reset until usb storage lists that stick, then load usb 0:1 ...\n'
+  lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID "$target_dev"
+}
+
+action=$(gum choose --header "Omarchy Mac live USB" \
+  "Install to a disk (persistent root, wipes it)" \
+  "Clone this live USB onto another stick")
+[[ -n $action ]] || fail "cancelled"
+
+case $action in
+  Install*) install_persistent_root ;;
+  Clone*) clone_live_usb ;;
+  *) fail "unknown action" ;;
+esac

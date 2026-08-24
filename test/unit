@@ -74,7 +74,33 @@ check "install script keeps overlay lowerdir mounted" grep -q omarchy-mac-overla
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "install script rewrites clone btrfs UUID" grep -q 'btrfstune -f -u' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "install script offers persistent root install" grep -q 'Install to a disk' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "install script labels the installed root OMARCHYROOT" grep -q OMARCHYROOT \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "sh -n omarchy-mac-install" bash -n \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "usb grub embed loads /grub/grub.cfg" grep -q 'configfile /grub/grub.cfg' \
+  "${repo_root}/configs/usb/grub-embed.cfg"
+check "live GRUB searches omarchy-usb-live not NVMe grub.cfg" grep -q /omarchy-usb-live \
+  "${repo_root}/configs/usb/grub-embed.cfg"
+check "install GRUB searches omarchy-usb-install" grep -q /omarchy-usb-install \
+  "${repo_root}/configs/usb/grub-embed-install.cfg"
+check "install initramfs waits for USB root" grep -q OMARCHYROOT \
+  "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-wait"
+check "install initramfs lists dwc3_apple" grep -q dwc3_apple \
+  "${repo_root}/configs/usb-initcpio/mkinitcpio-install.conf"
+check "sh -n omarchy-usb-wait" sh -n \
+  "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-wait"
+check "rootfs pacstraps dosfstools and grub" grep -q dosfstools \
+  "${repo_root}/builder/build-rootfs.sh"
+check "usb image embeds grub-embed.cfg" grep -q grub-embed.cfg \
+  "${repo_root}/builder/build-usb-image.sh"
+check "usb image builds install initramfs" grep -q initramfs-linux-asahi.img \
+  "${repo_root}/builder/build-usb-image.sh"
+check "install copies initramfs from live ESP" grep -q 'initramfs-linux-asahi.img on the live ESP' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "install initrd name is unique vs NVMe" grep -q initramfs-omarchy-usb-root.img \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "usb hook copies vendor firmware" grep -q '/lib/firmware/vendor' \
   "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-live"

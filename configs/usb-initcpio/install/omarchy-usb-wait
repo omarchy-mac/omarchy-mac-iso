@@ -1,0 +1,13 @@
+#!/bin/bash
+
+build() {
+  add_binary /usr/bin/udevadm
+  add_runscript
+}
+
+help() {
+  cat <<HELPEOF
+Wait for a USB root filesystem (UUID from the kernel cmdline, or label
+OMARCHYROOT) before the filesystems hook mounts it.
+HELPEOF
+}

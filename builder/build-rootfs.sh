@@ -62,7 +62,7 @@ mount -t tmpfs tmpfs "$mnt/boot"
 log "pacstrap base networkmanager iwd mesa asahi-audio gum"
 pacstrap -c "$mnt" base networkmanager iwd mesa asahi-audio \
   alsa-ucm-conf-asahi speakersafetyd pipewire-pulse gum \
-  parted gptfdisk btrfs-progs
+  parted gptfdisk btrfs-progs dosfstools grub
 
 umount "$mnt/boot"
 umount "$mnt/run"
@@ -78,6 +78,27 @@ install -d "$mnt/etc/systemd/system"
 install -d "$mnt/usr/local/sbin"
 install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-install" \
   "$mnt/usr/local/sbin/omarchy-mac-install"
+install -d "$mnt/usr/local/share/omarchy-mac-iso/initcpio/hooks"
+install -d "$mnt/usr/local/share/omarchy-mac-iso/initcpio/install"
+install -m644 "$repo_root/configs/usb-initcpio/mkinitcpio-install.conf" \
+  "$mnt/usr/local/share/omarchy-mac-iso/mkinitcpio-install.conf"
+install -m644 "$repo_root/configs/usb/grub-embed.cfg" \
+  "$mnt/usr/local/share/omarchy-mac-iso/grub-embed.cfg"
+install -m644 "$repo_root/configs/usb/grub-embed-install.cfg" \
+  "$mnt/usr/local/share/omarchy-mac-iso/grub-embed-install.cfg"
+install -m644 "$repo_root/configs/usb-initcpio/hooks/omarchy-usb-wait" \
+  "$mnt/usr/local/share/omarchy-mac-iso/initcpio/hooks/omarchy-usb-wait"
+install -m644 "$repo_root/configs/usb-initcpio/install/omarchy-usb-wait" \
+  "$mnt/usr/local/share/omarchy-mac-iso/initcpio/install/omarchy-usb-wait"
+# asahi-scripts is not pacstrapped (its alpm hooks mount the host ESP).
+# Copy only what mkinitcpio needs to build an installed-USB initramfs.
+[[ -f /usr/lib/initcpio/hooks/asahi ]] || fail "host asahi initcpio hook missing"
+install -m644 /usr/lib/initcpio/hooks/asahi \
+  "$mnt/usr/local/share/omarchy-mac-iso/initcpio/hooks/asahi"
+install -m644 /usr/lib/initcpio/install/asahi \
+  "$mnt/usr/local/share/omarchy-mac-iso/initcpio/install/asahi"
+mkdir -p "$mnt/usr/share"
+cp -a /usr/share/asahi-scripts "$mnt/usr/share/asahi-scripts"
 install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-usb-ready.service" \
   "$mnt/etc/systemd/system/omarchy-mac-usb-ready.service"
 install -d "$mnt/etc/systemd/system/getty@tty1.service.d"
