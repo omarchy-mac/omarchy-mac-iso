@@ -17,6 +17,10 @@ fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 command -v gum >/dev/null || fail "gum not found"
 command -v dd >/dev/null || fail "dd not found"
 
+# tty1 is also the kmsg console (live GRUB uses loglevel=7). printk
+# overwrites gum; drop console loglevel for the TUI.
+dmesg -n 1 2>/dev/null || true
+
 # Prefer the overlay lowerdir when we *are* the live USB. Two OMARCHYLIVE
 # labels (source + a previous clone) make by-label point at the wrong disk.
 overlay_payload_device() {
@@ -142,6 +146,7 @@ pick_target_disk() {
   [[ $target_name == nvme* ]] && fail "refusing NVMe"
   [[ $target_name == "$live_disk" ]] && fail "refusing the live USB"
   disk_has_apple_partitions "$target_name" && fail "refusing a disk with APFS/iBoot/Recovery"
+  printf '==> selected %s\n' "$target_dev"
 }
 
 clone_live_usb() {
@@ -204,9 +209,11 @@ install_persistent_root() {
   payload_bytes=$(lsblk -dn -b -o SIZE "$live_partition")
   min_bytes=$(( ESP_MIB * 1024 * 1024 + payload_bytes + 64 * 1024 * 1024 ))
   pick_target_disk "$min_bytes"
+  printf '==> confirm DESTROY of %s (arrow keys, then enter)\n' "$target_dev"
   gum confirm \
-    "This will DESTROY $target_dev (${choice#*  }) and install a persistent USB root (no overlay, no LUKS). Continue?" \
+    "DESTROY $target_dev (${choice#*  }) and install a persistent USB root (no overlay, no LUKS)?" \
     || fail "cancelled"
+  printf '==> confirmed\n'
 
   source_esp=$(esp_partition_on "$live_disk" || true)
   [[ -n $source_esp ]] || fail "no ESP on the live USB $source_dev"
@@ -294,7 +301,7 @@ set default=0
 search --no-floppy --file /initramfs-linux-asahi.img --set=root
 
 menuentry 'Omarchy Mac (USB root)' {
-  linux /vmlinuz-linux-asahi root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=7
+  linux /vmlinuz-linux-asahi root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
   initrd /initramfs-linux-asahi.img
 }
 EOF
