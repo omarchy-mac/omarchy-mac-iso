@@ -1,0 +1,107 @@
+#!/bin/bash
+# Clone this live USB onto another disk. Refuses NVMe, APFS, iBoot, Recovery,
+# and the live medium itself. Copies through the last partition (not the whole
+# source disk — a 16GB-class stick is often smaller than the live USB). Not
+# an Omarchy install.
+set -euo pipefail
+
+APPLE_APFS=7c3457ef-0000-11aa-aa11-00306543ecac
+APPLE_IBOOT=69646961-6700-11aa-aa11-00306543ecac
+APPLE_RECOVERY=52637672-7900-11aa-aa11-00306543ecac
+# GPT backup header + entries after the last partition
+GPT_BACKUP_BYTES=$((34 * 512))
+
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+[[ $EUID == 0 ]] || fail "run as root"
+command -v gum >/dev/null || fail "gum not found"
+command -v dd >/dev/null || fail "dd not found"
+
+live_partition=""
+if [[ -e /dev/disk/by-label/OMARCHYLIVE ]]; then
+  live_partition=$(readlink -f /dev/disk/by-label/OMARCHYLIVE)
+fi
+[[ -n $live_partition ]] || fail "no OMARCHYLIVE volume — plug in the live USB"
+live_disk=$(lsblk -no PKNAME "$live_partition")
+[[ -n $live_disk ]] || fail "could not find the disk that holds OMARCHYLIVE"
+source_dev=/dev/$live_disk
+
+# Bytes covering every partition on $1, plus slack for a backup GPT.
+# lsblk -b SIZE is bytes; START is 512-byte sectors.
+copy_bytes_for_disk() {
+  local disk=$1 name start size end=0
+  while read -r name start size; do
+    [[ $name == "$disk" ]] && continue
+    [[ -z $start || -z $size ]] && continue
+    (( start * 512 + size > end )) && end=$(( start * 512 + size ))
+  done < <(lsblk -lnb -o NAME,START,SIZE "/dev/$disk")
+  (( end > 0 )) || fail "no partitions on /dev/$disk"
+  printf '%s\n' $(( end + GPT_BACKUP_BYTES ))
+}
+
+disk_has_apple_partitions() {
+  local disk=$1 type
+  while read -r type; do
+    [[ -z $type ]] && continue
+    type=${type,,}
+    [[ $type == "$APPLE_APFS" || $type == "$APPLE_IBOOT" || $type == "$APPLE_RECOVERY" ]] && return 0
+  done < <(lsblk -n -o PARTTYPE "/dev/$disk")
+  return 1
+}
+
+unmount_disk() {
+  local dev=$1 mountpoint
+  while read -r mountpoint; do
+    [[ -z $mountpoint ]] && continue
+    umount "$mountpoint" || fail "could not unmount $mountpoint on $dev"
+  done < <(lsblk -ln -o MOUNTPOINT "$dev")
+}
+
+copy_bytes=$(copy_bytes_for_disk "$live_disk")
+
+candidates=()
+while read -r name size model tran; do
+  [[ -z $name ]] && continue
+  [[ $name == nvme* ]] && continue
+  [[ $name == "$live_disk" ]] && continue
+  [[ ${tran:-} == nvme ]] && continue
+  disk_has_apple_partitions "$name" && continue
+  bytes=$(lsblk -dn -b -o SIZE "/dev/$name")
+  (( bytes >= copy_bytes )) || continue
+  candidates+=("$name  $size  ${model:-disk}  ${tran:-}")
+done < <(lsblk -dn -o NAME,SIZE,MODEL,TRAN)
+
+(( ${#candidates[@]} > 0 )) || fail "no eligible disks (need USB/SCSI >= ${copy_bytes} bytes, not NVMe, not the live USB)"
+
+choice=$(printf '%s\n' "${candidates[@]}" | gum choose --header "Destroy ALL data on which disk?")
+[[ -n $choice ]] || fail "cancelled"
+target_name=${choice%% *}
+target_dev=/dev/$target_name
+
+[[ $target_name == nvme* ]] && fail "refusing NVMe"
+[[ $target_name == "$live_disk" ]] && fail "refusing the live USB"
+disk_has_apple_partitions "$target_name" && fail "refusing a disk with APFS/iBoot/Recovery"
+target_bytes=$(lsblk -dn -b -o SIZE "$target_dev")
+(( target_bytes >= copy_bytes )) || fail "$target_dev is too small (need $copy_bytes bytes)"
+
+gum confirm \
+  "This will DESTROY every partition on $target_dev (${choice#*  }). $copy_bytes bytes from $source_dev are copied onto it. Continue?" \
+  || fail "cancelled"
+
+unmount_disk "$target_dev"
+unmount_disk "$source_dev"
+sync
+
+printf '==> dd %s -> %s (%s bytes, through last partition)\n' \
+  "$source_dev" "$target_dev" "$copy_bytes"
+dd if="$source_dev" of="$target_dev" bs=4M iflag=count_bytes count="$copy_bytes" \
+  status=progress conv=fsync oflag=sync
+sync
+partprobe "$target_dev" 2>/dev/null || true
+
+if command -v sgdisk >/dev/null; then
+  sgdisk -e "$target_dev" || true
+fi
+
+printf '==> done. Unplug the live USB, cold-start, and boot the target the same way as the Lexar.\n'
+lsblk -o NAME,SIZE,FSTYPE,LABEL "$target_dev"

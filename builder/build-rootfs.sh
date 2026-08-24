@@ -61,7 +61,8 @@ mount -t tmpfs tmpfs "$mnt/boot"
 
 log "pacstrap base networkmanager iwd mesa asahi-audio gum"
 pacstrap -c "$mnt" base networkmanager iwd mesa asahi-audio \
-  alsa-ucm-conf-asahi speakersafetyd pipewire-pulse gum
+  alsa-ucm-conf-asahi speakersafetyd pipewire-pulse gum \
+  parted gptfdisk btrfs-progs
 
 umount "$mnt/boot"
 umount "$mnt/run"
@@ -74,6 +75,9 @@ cp -a "/usr/lib/modules/$kver" "$mnt/usr/lib/modules/"
 
 install -m644 "$repo_root/configs/usb/rootfs/issue" "$mnt/etc/issue"
 install -d "$mnt/etc/systemd/system"
+install -d "$mnt/usr/local/sbin"
+install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-install" \
+  "$mnt/usr/local/sbin/omarchy-mac-install"
 install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-usb-ready.service" \
   "$mnt/etc/systemd/system/omarchy-mac-usb-ready.service"
 install -d "$mnt/etc/systemd/system/getty@tty1.service.d"
