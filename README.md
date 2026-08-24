@@ -135,10 +135,11 @@ GUIDs):
   unless this *is* the running live overlay. Rewrites the clone btrfs UUID.
   Proven from Omarchy and from the live USB (2026-08-23): Lexar ↔ 14.5G stick,
   `gum 2.0.0`, `fnmode=1`.
-- **Install** — GPT ESP (`OMARCHYBOOT`) + btrfs root (`OMARCHYROOT`) filling
-  the disk, copy the payload, `btrfs resize max`, GRUB with `root=UUID=`.
-  Persistent root, no overlay, no LUKS, not Omarchy packages. Do not name
-  the initrd `initramfs-linux-asahi.img` (NVMe ESP has that; GRUB then
-  loads the LUKS initramfs). Proven on an M2 Max (2026-08-24): 14.5G stick,
-  `omarchy-usb-wait` mounted `UUID=e68e2508-…`, systemd mounted
-  `OMARCHYBOOT`/`OMARCHYROOT`, autologin `root@omarchy-mac`.
+- **Install (wipe USB)** — GPT ESP (`OMARCHYBOOT`) + btrfs root filling the
+  disk. Proven on an M2 Max (2026-08-24): 14.5G stick, autologin
+  `root@omarchy-mac`.
+- **Install into free space** — `parted mkpart` in an existing GPT hole only.
+  Never `mklabel`/`wipefs`. Refuses to run if there is no hole ≥ payload
+  (this machine's NVMe has none until APFS is shrunk **from macOS**). Writes
+  `grub/custom.cfg` on the existing ESP; does not replace `BOOTAA64.EFI`.
+  Loopback-tested; not yet proven on metal.

@@ -65,7 +65,7 @@ check "rootfs pacstraps mesa and gum" grep -q ' mesa ' \
 check "hid_apple fnmode=1 is in the tree" grep -q 'fnmode=1' \
   "${repo_root}/configs/usb/modprobe.d/hid_apple.conf"
 check "install script refuses Apple partition GUIDs" grep -q 7c3457ef \
-  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-disk.sh"
 check "install script copies through last partition not whole disk" grep -q iflag=count_bytes \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "install script unmounts the live USB before dd" grep -q 'unmount_disk "$source_dev"' \
@@ -74,8 +74,15 @@ check "install script keeps overlay lowerdir mounted" grep -q omarchy-mac-overla
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "install script rewrites clone btrfs UUID" grep -q 'btrfstune -f -u' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
-check "install script offers persistent root install" grep -q 'Install to a disk' \
+check "install script offers persistent root install" grep -q 'Install to a blank USB' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "install script offers free-space install" grep -q 'Install into free space' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "free-space install does not wipefs" \
+  bash -c 'awk "/^install_into_free_space\\(\\)/,/^action=/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -qv wipefs'
+check "sh -n omarchy-mac-disk.sh" bash -n \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-disk.sh"
+check "partition loopback tests" "${repo_root}/test/partition"
 check "install script labels the installed root OMARCHYROOT" grep -q OMARCHYROOT \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "sh -n omarchy-mac-install" bash -n \
