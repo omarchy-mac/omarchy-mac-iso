@@ -122,8 +122,9 @@ is not defined. Live GRUB prints `OMARCHY USB GRUB`; installed GRUB prints
 `OMARCHY USB INSTALL` / menu `Omarchy Mac (USB root)`. Omarchy Linux /
 Advanced options means you are on NVMe.
 
-Wi-Fi: nmtui Rescan until SSIDs appear, then Activate or
-`nmcli device wifi connect 'SSID' password 'PSK'`.
+Wi-Fi: nmtui Rescan until SSIDs appear (a few rescans is normal), then
+Activate. On the persistent USB root (2026-08-24) that was enough for
+`ping www.google.com`; nmcli is optional.
 
 ### Clone vs install
 
@@ -137,9 +138,12 @@ GUIDs):
   `gum 2.0.0`, `fnmode=1`.
 - **Install (wipe USB)** — GPT ESP (`OMARCHYBOOT`) + btrfs root filling the
   disk. Proven on an M2 Max (2026-08-24): 14.5G stick, autologin
-  `root@omarchy-mac`.
+  `root@omarchy-mac`, nmtui Rescan then Wi-Fi ping. Warm USB boot worked.
+  GRUB must search `/omarchy-usb-install`, not `/initramfs-linux-asahi.img`
+  (that file is the NVMe LUKS initramfs).
 - **Install into free space** — `parted mkpart` in an existing GPT hole only.
-  Never `mklabel`/`wipefs`. Refuses to run if there is no hole ≥ payload
-  (this machine's NVMe has none until APFS is shrunk **from macOS**). Writes
-  `grub/custom.cfg` on the existing ESP; does not replace `BOOTAA64.EFI`.
-  Loopback-tested; not yet proven on metal.
+  Never `mklabel`/`wipefs`. Proven on the Lexar hole (keep live
+  `OMARCHYISO`/`OMARCHYLIVE`, new `OMARCHYROOT` 11.4G). NVMe still has no
+  hole until APFS is shrunk **from macOS**. Writes `grub/custom.cfg` on the
+  existing ESP; unique `vmlinuz-omarchy-usb-root` / initrd names; does not
+  replace `BOOTAA64.EFI`.
