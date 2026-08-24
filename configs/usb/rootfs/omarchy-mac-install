@@ -135,20 +135,31 @@ dd if="$source_dev" of="$target_dev" bs=4M iflag=count_bytes count="$copy_bytes"
   status=progress conv=fsync oflag=sync
 sync
 partprobe "$target_dev" 2>/dev/null || true
-command -v udevadm >/dev/null && udevadm settle --timeout=5 || true
-
 if command -v sgdisk >/dev/null; then
   sgdisk -e "$target_dev" || true
 fi
+partprobe "$target_dev" 2>/dev/null || true
+command -v udevadm >/dev/null && udevadm settle --timeout=5 || true
 
-target_payload=$(payload_partition_on "$target_name" || true)
+target_payload=""
+for _ in 1 2 3 4 5 6; do
+  target_payload=$(payload_partition_on "$target_name" || true)
+  [[ -n $target_payload ]] && break
+  sleep 1
+  partprobe "$target_dev" 2>/dev/null || true
+done
 if [[ -n $target_payload ]] && command -v btrfstune >/dev/null; then
   printf '==> new btrfs UUID on %s (clone must not share the live fsid)\n' "$target_payload"
   if command -v btrfs >/dev/null; then
     btrfs device scan --forget "$target_payload" || true
   fi
   btrfstune -f -u "$target_payload"
+else
+  printf 'warning: no btrfs partition on %s yet; clone UUID was not rewritten\n' \
+    "$target_dev" >&2
 fi
 
-printf '==> done. Unplug the live USB, cold-start, and boot the target the same way as the Lexar.\n'
+printf '==> done. Unplug the live USB %s, cold-start, boot the target %s.\n' \
+  "$source_dev" "$target_dev"
+printf '    U-Boot: usb reset until usb storage lists that stick, then load usb 0:1 ...\n'
 lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID "$target_dev"
