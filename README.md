@@ -143,7 +143,11 @@ GUIDs):
   (that file is the NVMe LUKS initramfs).
 - **Install into free space** — `parted mkpart` in an existing GPT hole only.
   Never `mklabel`/`wipefs`. Proven on the Lexar hole (keep live
-  `OMARCHYISO`/`OMARCHYLIVE`, new `OMARCHYROOT` 11.4G). NVMe still has no
-  hole until APFS is shrunk **from macOS**. Writes `grub/custom.cfg` on the
+  `OMARCHYISO`/`OMARCHYLIVE`, new `OMARCHYROOT` 11.4G) and on this NVMe
+  after shrinking APFS **from macOS** (2026-08-24): p7 46G,
+  `root@omarchy-mac`, existing Omarchy still the default GRUB entry.
+  Parted whole-MiB starts can sit inside APFS on 4K NVMe — mkpart insets
+  1MiB. Apple GPT snapshots use `lsblk -l` so tree glyphs do not abort
+  after the new partition appears. Writes `grub/custom.cfg` on the
   existing ESP; unique `vmlinuz-omarchy-usb-root` / initrd names; does not
   replace `BOOTAA64.EFI`.

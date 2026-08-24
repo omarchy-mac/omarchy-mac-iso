@@ -16,11 +16,12 @@ disk_has_apple_partitions() {
     [[ -z $type ]] && continue
     type=${type,,}
     [[ $type == "$APPLE_APFS" || $type == "$APPLE_IBOOT" || $type == "$APPLE_RECOVERY" ]] && return 0
-  done < <(lsblk -n -o PARTTYPE "/dev/$disk" 2>/dev/null)
+  done < <(lsblk -ln -o PARTTYPE "/dev/$disk" 2>/dev/null)
   return 1
 }
 
 # Snapshot "name type" lines for Apple partitions on $1 (path or NAME).
+# Use -l so tree glyphs (├/└) do not change when a new partition is added.
 apple_partition_snapshot() {
   local dev=$1 name type
   while read -r name type; do
@@ -29,7 +30,7 @@ apple_partition_snapshot() {
     if [[ $type == "$APPLE_APFS" || $type == "$APPLE_IBOOT" || $type == "$APPLE_RECOVERY" ]]; then
       printf '%s %s\n' "$name" "$type"
     fi
-  done < <(lsblk -n -o NAME,PARTTYPE "$dev" 2>/dev/null)
+  done < <(lsblk -ln -o NAME,PARTTYPE "$dev" 2>/dev/null)
 }
 
 # Print "start_mib size_mib" for each Free Space region on a parted device
@@ -91,6 +92,17 @@ grow_gpt_to_device() {
   fi
 }
 
+# Parted reports free-space start in whole MiB, which can land inside
+# the previous partition's last fractional MiB (Apple NVMe 4K). Step 1MiB
+# in from both ends.
+inset_free_region() {
+  local start=$1 size=$2
+  start=$(( start + 1 ))
+  size=$(( size - 2 ))
+  (( size >= MIN_FREE_MIB )) || return 1
+  printf '%s %s\n' "$start" "$size"
+}
+
 # start size -> start size end, clamped so parted does not treat the
 # exact device size as "outside of the device".
 clamp_free_region() {
@@ -105,6 +117,7 @@ clamp_free_region() {
 }
 
 # Existing System ESP: GPT ESP type, or FAT labelled EFI*.
+# lsblk -l so tree glyphs are not part of NAME.
 existing_esp_on() {
   local disk=$1 name type label
   while read -r name type label; do
@@ -118,7 +131,7 @@ existing_esp_on() {
       printf '/dev/%s\n' "$name"
       return 0
     fi
-  done < <(lsblk -n -o NAME,PARTTYPE,LABEL "/dev/$disk" 2>/dev/null)
+  done < <(lsblk -ln -o NAME,PARTTYPE,LABEL "/dev/$disk" 2>/dev/null)
   return 1
 }
 
