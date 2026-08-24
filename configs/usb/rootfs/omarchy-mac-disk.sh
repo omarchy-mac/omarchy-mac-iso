@@ -16,11 +16,12 @@ disk_has_apple_partitions() {
     [[ -z $type ]] && continue
     type=${type,,}
     [[ $type == "$APPLE_APFS" || $type == "$APPLE_IBOOT" || $type == "$APPLE_RECOVERY" ]] && return 0
-  done < <(lsblk -n -o PARTTYPE "/dev/$disk" 2>/dev/null)
+  done < <(lsblk -ln -o PARTTYPE "/dev/$disk" 2>/dev/null)
   return 1
 }
 
 # Snapshot "name type" lines for Apple partitions on $1 (path or NAME).
+# Use -l so tree glyphs (├/└) do not change when a new partition is added.
 apple_partition_snapshot() {
   local dev=$1 name type
   while read -r name type; do
@@ -29,7 +30,7 @@ apple_partition_snapshot() {
     if [[ $type == "$APPLE_APFS" || $type == "$APPLE_IBOOT" || $type == "$APPLE_RECOVERY" ]]; then
       printf '%s %s\n' "$name" "$type"
     fi
-  done < <(lsblk -n -o NAME,PARTTYPE "$dev" 2>/dev/null)
+  done < <(lsblk -ln -o NAME,PARTTYPE "$dev" 2>/dev/null)
 }
 
 # Print "start_mib size_mib" for each Free Space region on a parted device
