@@ -114,10 +114,13 @@ load usb 0:1 ${kernel_addr_r} /EFI/BOOT/BOOTAA64.EFI
 bootefi ${kernel_addr_r} ${fdtcontroladdr}
 ```
 
-`bootflow select` of the USB row can still load NVMe's
-`/EFI/BOOT/BOOTAA64.EFI`. `bootcmd_usb0` is not defined. USB GRUB prints
-`OMARCHY USB GRUB (not the NVMe ESP)`. Omarchy Linux / Advanced options
-means you are on NVMe.
+`bootflow select` of a USB *row* can still load NVMe's
+`/EFI/BOOT/BOOTAA64.EFI` (same path). `bootflow scan -l` then select the
+`usb_mass_storage` entry (seq 2 on metal, 2026-08-24) and `bootflow boot`
+does load the stick. `load usb 0:1 …` / `bootefi` still works. `bootcmd_usb0`
+is not defined. Live GRUB prints `OMARCHY USB GRUB`; installed GRUB prints
+`OMARCHY USB INSTALL` / menu `Omarchy Mac (USB root)`. Omarchy Linux /
+Advanced options means you are on NVMe.
 
 Wi-Fi: nmtui Rescan until SSIDs appear, then Activate or
 `nmcli device wifi connect 'SSID' password 'PSK'`.
@@ -134,7 +137,8 @@ GUIDs):
   `gum 2.0.0`, `fnmode=1`.
 - **Install** — GPT ESP (`OMARCHYBOOT`) + btrfs root (`OMARCHYROOT`) filling
   the disk, copy the payload, `btrfs resize max`, GRUB with `root=UUID=`.
-  Persistent root, no overlay, no LUKS, not Omarchy packages. USB GRUB
-  searches for `/omarchy-usb-live` or `/omarchy-usb-install` so it cannot
-  load the NVMe ESP's `/grub/grub.cfg`. Rebuild `--usb --rootfs` so the
-  live image has grub and dosfstools.
+  Persistent root, no overlay, no LUKS, not Omarchy packages. Do not name
+  the initrd `initramfs-linux-asahi.img` (NVMe ESP has that; GRUB then
+  loads the LUKS initramfs). Proven on an M2 Max (2026-08-24): 14.5G stick,
+  `omarchy-usb-wait` mounted `UUID=e68e2508-…`, systemd mounted
+  `OMARCHYBOOT`/`OMARCHYROOT`, autologin `root@omarchy-mac`.

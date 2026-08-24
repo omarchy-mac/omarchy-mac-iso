@@ -266,6 +266,10 @@ install_persistent_root() {
   printf 'UUID=%s /home btrfs subvol=@home,compress=zstd:1 0 0\n' "$root_uuid" >>"$root_mnt/etc/fstab"
   printf 'UUID=%s /var/log btrfs subvol=@log,compress=zstd:1 0 0\n' "$root_uuid" >>"$root_mnt/etc/fstab"
   printf 'omarchy-mac\n' >"$root_mnt/etc/hostname"
+  cat >"$root_mnt/etc/issue" <<'EOF'
+Omarchy Mac USB root (not live, not the desktop).
+Wi-Fi: nmtui Rescan, then Activate.
+EOF
   rm -f "$root_mnt/omarchy-mac-overlay-write"
   : >"$root_mnt/etc/machine-id"
 
