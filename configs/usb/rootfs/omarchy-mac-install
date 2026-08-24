@@ -1,8 +1,9 @@
 #!/bin/bash
 # Clone this live USB onto another disk. Refuses NVMe, APFS, iBoot, Recovery,
 # and the live medium itself. Copies through the last partition (not the whole
-# source disk — a 16GB-class stick is often smaller than the live USB). Not
-# an Omarchy install.
+# source disk — a 16GB-class stick is often smaller than the live USB). When
+# this is the running live USB, keep the overlay lowerdir mounted. Not an
+# Omarchy install.
 set -euo pipefail
 
 APPLE_APFS=7c3457ef-0000-11aa-aa11-00306543ecac
@@ -17,14 +18,31 @@ fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 command -v gum >/dev/null || fail "gum not found"
 command -v dd >/dev/null || fail "dd not found"
 
+# Prefer the overlay lowerdir when we *are* the live USB. Two OMARCHYLIVE
+# labels (source + a previous clone) make by-label point at the wrong disk.
+overlay_payload_device() {
+  local src
+  [[ -e /omarchy-mac-overlay-write ]] || return 1
+  src=$(findmnt -nro SOURCE /run/omarchy-root 2>/dev/null || true)
+  src=${src%%[[]*}
+  [[ -b $src ]] || return 1
+  printf '%s\n' "$src"
+}
+
 live_partition=""
-if [[ -e /dev/disk/by-label/OMARCHYLIVE ]]; then
+if live_partition=$(overlay_payload_device); then
+  :
+elif [[ -e /dev/disk/by-label/OMARCHYLIVE ]]; then
   live_partition=$(readlink -f /dev/disk/by-label/OMARCHYLIVE)
 fi
 [[ -n $live_partition ]] || fail "no OMARCHYLIVE volume — plug in the live USB"
 live_disk=$(lsblk -no PKNAME "$live_partition")
 [[ -n $live_disk ]] || fail "could not find the disk that holds OMARCHYLIVE"
 source_dev=/dev/$live_disk
+running_from_this_live_usb=0
+if overlay=$(overlay_payload_device); then
+  [[ $overlay == "$live_partition" ]] && running_from_this_live_usb=1
+fi
 
 # Bytes covering every partition on $1, plus slack for a backup GPT.
 # lsblk -b SIZE is bytes; START is 512-byte sectors.
@@ -50,11 +68,26 @@ disk_has_apple_partitions() {
 }
 
 unmount_disk() {
-  local dev=$1 mountpoint
+  local dev=$1 mountpoint skip_live_root=${2:-0}
   while read -r mountpoint; do
     [[ -z $mountpoint ]] && continue
+    if (( skip_live_root == 1 )); then
+      [[ $mountpoint == /run/omarchy-root ]] && continue
+      [[ $mountpoint == / ]] && continue
+    fi
     umount "$mountpoint" || fail "could not unmount $mountpoint on $dev"
   done < <(lsblk -ln -o MOUNTPOINT "$dev")
+}
+
+payload_partition_on() {
+  local disk=$1 name fstype
+  while read -r name fstype; do
+    [[ $name == "$disk" ]] && continue
+    [[ $fstype == btrfs ]] || continue
+    printf '/dev/%s\n' "$name"
+    return 0
+  done < <(lsblk -ln -o NAME,FSTYPE "/dev/$disk")
+  return 1
 }
 
 copy_bytes=$(copy_bytes_for_disk "$live_disk")
@@ -89,7 +122,11 @@ gum confirm \
   || fail "cancelled"
 
 unmount_disk "$target_dev"
-unmount_disk "$source_dev"
+if (( running_from_this_live_usb == 1 )); then
+  unmount_disk "$source_dev" 1
+else
+  unmount_disk "$source_dev"
+fi
 sync
 
 printf '==> dd %s -> %s (%s bytes, through last partition)\n' \
@@ -98,10 +135,20 @@ dd if="$source_dev" of="$target_dev" bs=4M iflag=count_bytes count="$copy_bytes"
   status=progress conv=fsync oflag=sync
 sync
 partprobe "$target_dev" 2>/dev/null || true
+command -v udevadm >/dev/null && udevadm settle --timeout=5 || true
 
 if command -v sgdisk >/dev/null; then
   sgdisk -e "$target_dev" || true
 fi
 
+target_payload=$(payload_partition_on "$target_name" || true)
+if [[ -n $target_payload ]] && command -v btrfstune >/dev/null; then
+  printf '==> new btrfs UUID on %s (clone must not share the live fsid)\n' "$target_payload"
+  if command -v btrfs >/dev/null; then
+    btrfs device scan --forget "$target_payload" || true
+  fi
+  btrfstune -f -u "$target_payload"
+fi
+
 printf '==> done. Unplug the live USB, cold-start, and boot the target the same way as the Lexar.\n'
-lsblk -o NAME,SIZE,FSTYPE,LABEL "$target_dev"
+lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID "$target_dev"

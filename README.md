@@ -95,10 +95,13 @@ and clones this disk onto another USB (refuses NVMe and APFS). First cut
 is a `dd` through the last partition (a 16GB-class stick is often a few
 hundred megabytes smaller than the live USB), not LUKS or Omarchy. It
 unmounts source and target first — cloning a mounted payload produced a
-btrfs-csum-corrupt copy that GRUB-booted then reset into NVMe. Proven from
-the installed Omarchy (2026-08-23), not from a booted live USB: 14.9G Lexar
-→ 14.5G stick, then that stick booted to autologin root, `gum version 2.0.0`,
-`fnmode=1`. Running the installer *on* the live USB is still untested. Wi-Fi: nmtui Rescan until SSIDs appear, then Activate or
+btrfs-csum-corrupt copy that GRUB-booted then reset into NVMe. If this *is*
+the running live USB, the overlay lowerdir stays mounted and source is the
+overlay device (not `/dev/disk/by-label/OMARCHYLIVE`, which is wrong when a
+clone is plugged in). The clone gets a new btrfs UUID. Proven from the
+installed Omarchy (2026-08-23): 14.9G Lexar → 14.5G stick, then that stick
+booted to autologin root, `gum version 2.0.0`, `fnmode=1`. Running the
+installer *on* the live USB is still untested. Wi-Fi: nmtui Rescan until SSIDs appear, then Activate or
 `nmcli device wifi connect 'SSID' password 'PSK'` (nmcli failed before a
 scan, succeeded after). Default `--usb` without `--rootfs` still hangs at busybox pid 1.
 
