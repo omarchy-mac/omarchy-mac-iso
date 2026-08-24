@@ -51,6 +51,19 @@ check "rollback leaves 4 partitions" "(( $part_count == 4 ))"
 dump_rolled=$(sfdisk --dump "$img")
 check "iBoot type survives rollback" "grep -qi '$APPLE_IBOOT' <<<'$(printf '%s' "$dump_rolled")'"
 
+img_grow=$(mktemp)
+truncate -s 4G "$img_grow"
+parted -s "$img_grow" mklabel gpt mkpart payload 1MiB 100%
+truncate -s 8G "$img_grow"
+grow_gpt_to_device "$img_grow"
+region=$(largest_free_region "$img_grow")
+read -r gs gsz <<<"$region"
+read -r gs gsz ge <<<"$(clamp_free_region "$gs" "$gsz" "$(device_mib "$img_grow")")"
+check "grown image has a hole" "(( $gsz >= 2048 ))"
+parted -s "$img_grow" mkpart root btrfs "${gs}MiB" "${ge}MiB"
+check "mkpart in grown image hole succeeds" "parted -s '$img_grow' print | grep -q root"
+rm -f "$img_grow"
+
 img2=$(mktemp)
 truncate -s 2G "$img2"
 parted -s "$img2" mklabel gpt mkpart full 1MiB 100%

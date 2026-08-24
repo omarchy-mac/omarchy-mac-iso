@@ -66,6 +66,44 @@ disk_is_nvme() {
   [[ $name == nvme* ]]
 }
 
+device_mib() {
+  local dev=$1 bytes
+  if [[ -b $dev ]]; then
+    bytes=$(( $(cat /sys/block/"${dev#/dev/}"/size) * 512 ))
+  else
+    bytes=$(stat -c %s "$dev")
+  fi
+  printf '%s\n' $(( bytes / 1024 / 1024 ))
+}
+
+# Move backup GPT to the real end of a USB image that was dd'd onto a
+# larger stick. Never run this on NVMe / Apple partitions.
+grow_gpt_to_device() {
+  local dev=$1 name=${1#/dev/}
+  if [[ -b $dev ]]; then
+    disk_is_nvme "$name" && return 0
+    disk_has_apple_partitions "$name" && return 0
+  fi
+  if command -v sgdisk >/dev/null; then
+    sgdisk -e "$dev" >/dev/null
+  else
+    printf 'Fix\n' | parted ---pretend-input-tty "$dev" print >/dev/null || true
+  fi
+}
+
+# start size -> start size end, clamped so parted does not treat the
+# exact device size as "outside of the device".
+clamp_free_region() {
+  local start=$1 size=$2 disk_mib=$3 end max_end
+  end=$(( start + size ))
+  max_end=$(( disk_mib - 2 ))
+  (( max_end > start )) || return 1
+  (( end > max_end )) && end=$max_end
+  size=$(( end - start ))
+  (( size >= MIN_FREE_MIB )) || return 1
+  printf '%s %s %s\n' "$start" "$size" "$end"
+}
+
 # Existing System ESP: GPT ESP type, or FAT labelled EFI*.
 existing_esp_on() {
   local disk=$1 name type label

@@ -389,11 +389,11 @@ install_into_free_space() {
   [[ -n $choice ]] || fail "cancelled"
   target_name=${choice%% *}
   target_dev=/dev/$target_name
-  region=$(largest_free_region "$target_dev")
+  region=$(largest_free_region "$target_dev") || fail "no free region on $target_dev"
   read -r hole_start hole_size <<<"$region"
-  hole_end=$(( hole_start + hole_size ))
-  # Leave 1MiB at the end of the hole for GPT backup slack on some tools
-  (( hole_end > hole_start + min_mib )) || fail "free region shrank"
+  read -r hole_start hole_size hole_end <<<"$(clamp_free_region "$hole_start" "$hole_size" "$(device_mib "$target_dev")")" \
+    || fail "free region does not fit on $target_dev"
+  (( hole_size >= min_mib )) || fail "free region shrank"
 
   printf '==> selected %s hole %sMiB-%sMiB (%sMiB)\n' \
     "$target_dev" "$hole_start" "$hole_end" "$hole_size"
@@ -434,6 +434,14 @@ install_into_free_space() {
 
   before_apple=$(apple_partition_snapshot "$target_dev")
   before_names=$(partition_names_on "$target_name")
+
+  printf '==> growing GPT to the full device (USB image often smaller than the stick)\n'
+  grow_gpt_to_device "$target_dev"
+  partprobe "$target_dev" 2>/dev/null || true
+  region=$(largest_free_region "$target_dev") || fail "no free region on $target_dev after GPT grow"
+  read -r hole_start hole_size <<<"$region"
+  read -r hole_start hole_size hole_end <<<"$(clamp_free_region "$hole_start" "$hole_size" "$(device_mib "$target_dev")")" \
+    || fail "free region does not fit on $target_dev after GPT grow"
 
   printf '==> mkpart root on %s (%sMiB-%sMiB)\n' "$target_dev" "$hole_start" "$hole_end"
   parted -s "$target_dev" mkpart root btrfs "${hole_start}MiB" "${hole_end}MiB"
