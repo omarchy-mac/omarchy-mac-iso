@@ -55,9 +55,10 @@ booted live USB the same day: 14.5G stick → Lexar; U-Boot skipped
 metal (2026-08-24): 14.5G stick, GRUB `Omarchy Mac (USB root)`,
 `omarchy-usb-wait` mounted the new UUID, hostname `omarchy-mac`. Free-space install is proven on the Lexar hole (2026-08-24): live
 partitions kept, `OMARCHYROOT` 11.4G. Wipe-install 14.5G stick booted
-warm, `root@omarchy-mac`, nmtui Rescan then `ping www.google.com`. This
-NVMe still has no hole — shrink APFS from macOS, never from Linux. Not
-yet: LUKS, Omarchy packages, or a real internal-disk install.
+warm, `root@omarchy-mac`, nmtui Rescan then `ping www.google.com`. NVMe
+hole after macOS APFS shrink (2026-08-24): p7 46G, existing Omarchy still
+boots, new GRUB entry `root@omarchy-mac`. Shrink APFS from macOS, never
+from Linux. Not yet: LUKS or Omarchy packages on the new root.
 
 ## Architecture: one rootfs, two front doors
 
@@ -356,8 +357,9 @@ GitHub Releases vs R2 vs split assets.
 ### S7 — Testing
 
 - `test/unit` — partitioning against loopback files; installer logic.
-- Hardware, non-destructive: install to an external disk, not internal NVMe.
-  This machine's internal GPT has **zero** free space.
+- Hardware, non-destructive: USB first; internal NVMe only into a hole
+  left by shrinking APFS **from macOS**. This machine's p7 is that hole
+  (2026-08-24).
 - No Apple SoC QEMU. `cidata` plus `test/acceptance.d` after first boot.
 
 ## Verification
