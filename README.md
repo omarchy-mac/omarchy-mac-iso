@@ -148,6 +148,10 @@ GUIDs):
   `root@omarchy-mac`, existing Omarchy still the default GRUB entry.
   Parted whole-MiB starts can sit inside APFS on 4K NVMe — mkpart insets
   1MiB. Apple GPT snapshots use `lsblk -l` so tree glyphs do not abort
-  after the new partition appears. Writes `grub/custom.cfg` on the
-  existing ESP; unique `vmlinuz-omarchy-usb-root` / initrd names; does not
-  replace `BOOTAA64.EFI`.
+  after the new partition appears. Two System ESP modes: **piggyback** if
+  `BOOTAA64.EFI` already exists (`custom.cfg` only, file unchanged);
+  **own** if the ESP is UEFI-only (no GRUB) — same `grub-mkstandalone`
+  recipe as wipe-USB, marker `/omarchy-mac-root`, never `mkfs` or
+  `update-m1n1`. Unique `vmlinuz-omarchy-usb-root` / initrd names.
+  `m1n1/` / `vendorfw/` / `asahi/` hashes must match after. A fourth
+  menu item writes GRUB for an existing `OMARCHYROOT` without `mkpart`.

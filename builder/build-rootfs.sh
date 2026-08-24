@@ -82,6 +82,8 @@ install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-disk.sh" \
   "$mnt/usr/local/share/omarchy-mac-iso/omarchy-mac-disk.sh"
 install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-disk.sh" \
   "$mnt/usr/local/sbin/omarchy-mac-disk.sh"
+install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh" \
+  "$mnt/usr/local/share/omarchy-mac-iso/omarchy-mac-esp.sh"
 install -d "$mnt/usr/local/share/omarchy-mac-iso/initcpio/hooks"
 install -d "$mnt/usr/local/share/omarchy-mac-iso/initcpio/install"
 install -m644 "$repo_root/configs/usb-initcpio/mkinitcpio-install.conf" \
@@ -90,6 +92,8 @@ install -m644 "$repo_root/configs/usb/grub-embed.cfg" \
   "$mnt/usr/local/share/omarchy-mac-iso/grub-embed.cfg"
 install -m644 "$repo_root/configs/usb/grub-embed-install.cfg" \
   "$mnt/usr/local/share/omarchy-mac-iso/grub-embed-install.cfg"
+install -m644 "$repo_root/configs/usb/grub-embed-system.cfg" \
+  "$mnt/usr/local/share/omarchy-mac-iso/grub-embed-system.cfg"
 install -m644 "$repo_root/configs/usb-initcpio/hooks/omarchy-usb-wait" \
   "$mnt/usr/local/share/omarchy-mac-iso/initcpio/hooks/omarchy-usb-wait"
 install -m644 "$repo_root/configs/usb-initcpio/install/omarchy-usb-wait" \

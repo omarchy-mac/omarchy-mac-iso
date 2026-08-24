@@ -110,9 +110,20 @@ check "install copies initramfs from live ESP" grep -q 'initramfs-linux-asahi.im
 check "install initrd name is unique vs NVMe" grep -q initramfs-omarchy-usb-root.img \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "free-space install uses unique vmlinuz on shared ESP" grep -q vmlinuz-omarchy-usb-root \
-  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
 check "free-space install refuses to change BOOTAA64.EFI" grep -q 'BOOTAA64.EFI changed' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "sh -n omarchy-mac-esp.sh" bash -n \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
+check "esp-grub loopback tests" "${repo_root}/test/esp-grub"
+check "system GRUB embed searches omarchy-mac-root" grep -q /omarchy-mac-root \
+  "${repo_root}/configs/usb/grub-embed-system.cfg"
+check "install offers System ESP GRUB for existing root" grep -q 'Install GRUB for an existing OMARCHYROOT' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "own-mode writes BOOTAA64 when the ESP has none" grep -q write_owned_esp_grub \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "rootfs copies system GRUB embed" grep -q grub-embed-system.cfg \
+  "${repo_root}/builder/build-rootfs.sh"
 check "usb hook copies vendor firmware" grep -q '/lib/firmware/vendor' \
   "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-live"
 
