@@ -358,10 +358,10 @@ install_into_free_space() {
   local before_names before_apple backup
   local root_part root_mnt esp_part esp_mnt
   local root_uuid esp_uuid live_esp_mnt live_esp_mounted_by_us
+  local payload_mnt before_efi after_efi before_prot after_prot
   local created_parts=()
 
   command -v parted >/dev/null || fail "parted not found"
-  [[ -f $SHARE/grub-embed-install.cfg ]] || fail "missing $SHARE/grub-embed-install.cfg"
 
   payload_bytes=$(lsblk -dn -b -o SIZE "$live_partition")
   min_bytes=$(( payload_bytes + 64 * 1024 * 1024 ))
@@ -417,6 +417,14 @@ install_into_free_space() {
   [[ -n $source_esp ]] || fail "no ESP on the live USB $source_dev"
   esp_part=$(existing_esp_on "$target_name" || true)
   [[ -n $esp_part ]] || fail "$target_dev has no ESP; will not create one next to APFS"
+
+  # Do not dd a mounted payload (btrfs csum corruption). Overlay lowerdir stays.
+  if (( running_from_this_live_usb != 1 )); then
+    payload_mnt=$(findmnt -n -o TARGET "$live_partition" || true)
+    if [[ -n $payload_mnt ]]; then
+      umount "$payload_mnt" || fail "could not unmount $payload_mnt before dd"
+    fi
+  fi
 
   backup=$(mktemp /tmp/omarchy-gpt-${target_name}.XXXXXX)
   if command -v sfdisk >/dev/null; then
@@ -481,6 +489,8 @@ EOF
     mount "$esp_part" "$esp_mnt"
     esp_mounted_by_us=1
   fi
+  before_efi=$(sha256sum "$esp_mnt/EFI/BOOT/BOOTAA64.EFI" 2>/dev/null || true)
+  before_prot=$( (cd "$esp_mnt" && find asahi m1n1 vendorfw EFI/asahi -type f 2>/dev/null | sort | xargs -r sha256sum) || true )
 
   live_esp_mnt=$(findmnt -n -o TARGET "$source_esp" || true)
   live_esp_mounted_by_us=0
@@ -491,7 +501,8 @@ EOF
   fi
   [[ -f $live_esp_mnt/vmlinuz-linux-asahi ]] || fail "no vmlinuz on live ESP"
   [[ -f $live_esp_mnt/initramfs-linux-asahi.img ]] || fail "no initramfs-linux-asahi.img on live ESP"
-  cp "$live_esp_mnt/vmlinuz-linux-asahi" "$esp_mnt/vmlinuz-linux-asahi"
+  # Unique names so a shared System ESP (NVMe /boot) is not overwritten.
+  cp "$live_esp_mnt/vmlinuz-linux-asahi" "$esp_mnt/vmlinuz-omarchy-usb-root"
   cp "$live_esp_mnt/initramfs-linux-asahi.img" "$esp_mnt/initramfs-omarchy-usb-root.img"
   if (( live_esp_mounted_by_us == 1 )); then
     umount "$live_esp_mnt"
@@ -502,7 +513,7 @@ EOF
   cat >"$esp_mnt/grub/custom.cfg" <<EOF
 menuentry 'Omarchy Mac (new root $root_uuid)' {
   search --no-floppy --file /initramfs-omarchy-usb-root.img --set=root
-  linux /vmlinuz-linux-asahi root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
+  linux /vmlinuz-omarchy-usb-root root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
   initrd /initramfs-omarchy-usb-root.img
 }
 EOF
@@ -511,6 +522,11 @@ EOF
     printf '\nif [ -f /grub/custom.cfg ]; then source /grub/custom.cfg; fi\n' \
       >>"$esp_mnt/grub/grub.cfg"
   fi
+
+  after_efi=$(sha256sum "$esp_mnt/EFI/BOOT/BOOTAA64.EFI" 2>/dev/null || true)
+  [[ $before_efi == "$after_efi" ]] || fail "BOOTAA64.EFI changed — aborting"
+  after_prot=$( (cd "$esp_mnt" && find asahi m1n1 vendorfw EFI/asahi -type f 2>/dev/null | sort | xargs -r sha256sum) || true )
+  [[ $before_prot == "$after_prot" ]] || fail "asahi/m1n1/vendorfw on the ESP changed — aborting"
 
   esp_uuid=$(blkid -s UUID -o value "$esp_part")
   printf 'UUID=%s /boot vfat defaults,fmask=0133,dmask=0022 0 2\n' "$esp_uuid" >>"$root_mnt/etc/fstab"
