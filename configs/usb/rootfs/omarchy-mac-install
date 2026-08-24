@@ -284,7 +284,8 @@ install_persistent_root() {
   [[ -f $live_esp_mnt/vmlinuz-linux-asahi ]] || fail "no vmlinuz-linux-asahi on the live ESP"
   [[ -f $live_esp_mnt/initramfs-linux-asahi.img ]] || fail "no initramfs-linux-asahi.img on the live ESP"
   cp "$live_esp_mnt/vmlinuz-linux-asahi" "$esp_mnt/vmlinuz-linux-asahi"
-  cp "$live_esp_mnt/initramfs-linux-asahi.img" "$esp_mnt/initramfs-linux-asahi.img"
+  # Unique name: NVMe ESP also has initramfs-linux-asahi.img (LUKS).
+  cp "$live_esp_mnt/initramfs-linux-asahi.img" "$esp_mnt/initramfs-omarchy-usb-root.img"
   if (( live_esp_mounted_by_us == 1 )); then
     umount "$live_esp_mnt"
     rmdir "$live_esp_mnt"
@@ -298,11 +299,11 @@ echo '========================================'
 set timeout=8
 set default=0
 
-search --no-floppy --file /initramfs-linux-asahi.img --set=root
+search --no-floppy --file /omarchy-usb-install --set=root
 
 menuentry 'Omarchy Mac (USB root)' {
   linux /vmlinuz-linux-asahi root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
-  initrd /initramfs-linux-asahi.img
+  initrd /initramfs-omarchy-usb-root.img
 }
 EOF
   cp "$grub_cfg" "$esp_mnt/grub/grub.cfg"
