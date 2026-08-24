@@ -134,5 +134,7 @@ GUIDs):
   `gum 2.0.0`, `fnmode=1`.
 - **Install** — GPT ESP (`OMARCHYBOOT`) + btrfs root (`OMARCHYROOT`) filling
   the disk, copy the payload, `btrfs resize max`, GRUB with `root=UUID=`.
-  Persistent root, no overlay, no LUKS, not Omarchy packages. Untested on
-  metal. Rebuild `--usb --rootfs` so the live image has grub and dosfstools.
+  Persistent root, no overlay, no LUKS, not Omarchy packages. USB GRUB
+  searches for `/omarchy-usb-live` or `/omarchy-usb-install` so it cannot
+  load the NVMe ESP's `/grub/grub.cfg`. Rebuild `--usb --rootfs` so the
+  live image has grub and dosfstools.

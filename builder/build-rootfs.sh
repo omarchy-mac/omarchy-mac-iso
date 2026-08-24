@@ -84,6 +84,8 @@ install -m644 "$repo_root/configs/usb-initcpio/mkinitcpio-install.conf" \
   "$mnt/usr/local/share/omarchy-mac-iso/mkinitcpio-install.conf"
 install -m644 "$repo_root/configs/usb/grub-embed.cfg" \
   "$mnt/usr/local/share/omarchy-mac-iso/grub-embed.cfg"
+install -m644 "$repo_root/configs/usb/grub-embed-install.cfg" \
+  "$mnt/usr/local/share/omarchy-mac-iso/grub-embed-install.cfg"
 install -m644 "$repo_root/configs/usb-initcpio/hooks/omarchy-usb-wait" \
   "$mnt/usr/local/share/omarchy-mac-iso/initcpio/hooks/omarchy-usb-wait"
 install -m644 "$repo_root/configs/usb-initcpio/install/omarchy-usb-wait" \

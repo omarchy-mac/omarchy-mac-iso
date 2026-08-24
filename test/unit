@@ -82,6 +82,10 @@ check "sh -n omarchy-mac-install" bash -n \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "usb grub embed loads /grub/grub.cfg" grep -q 'configfile /grub/grub.cfg' \
   "${repo_root}/configs/usb/grub-embed.cfg"
+check "live GRUB searches omarchy-usb-live not NVMe grub.cfg" grep -q /omarchy-usb-live \
+  "${repo_root}/configs/usb/grub-embed.cfg"
+check "install GRUB searches omarchy-usb-install" grep -q /omarchy-usb-install \
+  "${repo_root}/configs/usb/grub-embed-install.cfg"
 check "install initramfs waits for USB root" grep -q OMARCHYROOT \
   "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-wait"
 check "install initramfs lists dwc3_apple" grep -q dwc3_apple \

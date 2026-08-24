@@ -201,6 +201,7 @@ install_persistent_root() {
   command -v grub-mkstandalone >/dev/null || fail "grub-mkstandalone not found — rebuild with --usb --rootfs (grub)"
   command -v mkinitcpio >/dev/null || fail "mkinitcpio not found"
   [[ -f $SHARE/mkinitcpio-install.conf ]] || fail "missing $SHARE/mkinitcpio-install.conf — rebuild the live USB"
+  [[ -f $SHARE/grub-embed-install.cfg ]] || fail "missing $SHARE/grub-embed-install.cfg — rebuild the live USB"
 
   payload_bytes=$(lsblk -dn -b -o SIZE "$live_partition")
   min_bytes=$(( ESP_MIB * 1024 * 1024 + payload_bytes + 64 * 1024 * 1024 ))
@@ -310,13 +311,14 @@ menuentry 'Omarchy Mac (USB root)' {
 EOF
   cp "$grub_cfg" "$esp_mnt/grub/grub.cfg"
   cp "$grub_cfg" "$esp_mnt/EFI/BOOT/grub.cfg"
+  : >"$esp_mnt/omarchy-usb-install"
 
   grub-mkstandalone -O arm64-efi \
     --fonts="" --locales="" --themes="" \
     --install-modules="linux fat ext2 btrfs part_gpt search search_label search_fs_uuid search_fs_file echo normal configfile gzio reboot sleep" \
     --modules="part_gpt fat search search_fs_file configfile linux echo normal" \
     -o "$esp_mnt/EFI/BOOT/BOOTAA64.EFI" \
-    "boot/grub/grub.cfg=$SHARE/grub-embed.cfg"
+    "boot/grub/grub.cfg=$SHARE/grub-embed-install.cfg"
 
   esp_uuid=$(blkid -s UUID -o value "$esp_part")
   printf 'UUID=%s /boot vfat defaults,fmask=0133,dmask=0022 0 2\n' "$esp_uuid" >>"$root_mnt/etc/fstab"
