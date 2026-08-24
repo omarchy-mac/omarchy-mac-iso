@@ -35,20 +35,21 @@ apple_partition_snapshot() {
 # Print "start_mib size_mib" for each Free Space region on a parted device
 # (block device or image file). start/size are in MiB.
 list_free_regions() {
-  local dev=$1 start end size rest
+  local dev=$1 start end size rest found=0
   while read -r start end size rest; do
-    [[ $rest == *Free* ]] || continue
+    [[ $rest == *"Free Space"* ]] || continue
     start=${start%s}
     size=${size%s}
-    # parted unit MiB prints e.g. 1025MiB — strip the unit
     start=${start%MiB}
     size=${size%MiB}
     start=${start%%.*}
     size=${size%%.*}
-    [[ -z $start || -z $size ]] && continue
+    [[ $start =~ ^[0-9]+$ && $size =~ ^[0-9]+$ ]] || continue
     (( size >= MIN_FREE_MIB )) || continue
     printf '%s %s\n' "$start" "$size"
+    found=1
   done < <(parted -s "$dev" unit MiB print free 2>/dev/null)
+  (( found == 1 ))
 }
 
 largest_free_region() {
