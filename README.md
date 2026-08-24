@@ -95,10 +95,16 @@ and clones this disk onto another USB (refuses NVMe and APFS). First cut
 is a `dd` through the last partition (a 16GB-class stick is often a few
 hundred megabytes smaller than the live USB), not LUKS or Omarchy. It
 unmounts source and target first — cloning a mounted payload produced a
-btrfs-csum-corrupt copy that GRUB-booted then reset into NVMe. Proven from
-the installed Omarchy (2026-08-23), not from a booted live USB: 14.9G Lexar
-→ 14.5G stick, then that stick booted to autologin root, `gum version 2.0.0`,
-`fnmode=1`. Running the installer *on* the live USB is still untested. Wi-Fi: nmtui Rescan until SSIDs appear, then Activate or
+btrfs-csum-corrupt copy that GRUB-booted then reset into NVMe. If this *is*
+the running live USB, the overlay lowerdir stays mounted and source is the
+overlay device (not `/dev/disk/by-label/OMARCHYLIVE`, which is wrong when a
+clone is plugged in). The clone gets a new btrfs UUID (after udev sees the payload; a first
+from-live run skipped `btrfstune` when `lsblk` still had empty FSTYPE).
+Proven from the installed Omarchy (2026-08-23): 14.9G Lexar → 14.5G stick,
+then that stick booted to autologin root, `gum version 2.0.0`, `fnmode=1`.
+Proven *on* the live USB (2026-08-23): 14.5G stick → Lexar, then that Lexar
+booted after `usb reset` twice (`05dc:c753` skipped until the bus came up).
+Wi-Fi: nmtui Rescan until SSIDs appear, then Activate or
 `nmcli device wifi connect 'SSID' password 'PSK'` (nmcli failed before a
 scan, succeeded after). Default `--usb` without `--rootfs` still hangs at busybox pid 1.
 
@@ -110,10 +116,14 @@ sudo dd if=release/omarchy-mac-iso-usb/omarchy-mac-usb.img of=/dev/sdX bs=4M sta
 
 **Shutdown, then power on** — a warm reboot often leaves Type-C/PD
 unenumerated in U-Boot (`0 Storage Device(s) found`). After a cold start,
-interrupt U-Boot (~1s) if NVMe already has Linux, and load the stick's
-GRUB explicitly (do not `saveenv`):
+interrupt U-Boot (~1s) if NVMe already has Linux. If `usb storage` is empty
+or U-Boot skips the stick (`Cannot read configuration, skipping device
+05dc:c753` on the Lexar), `usb reset` until storage appears (twice on
+metal, 2026-08-23), then load the stick's GRUB explicitly (do not `saveenv`):
 
 ```
+usb reset
+usb storage
 load usb 0:1 ${kernel_addr_r} /EFI/BOOT/BOOTAA64.EFI
 bootefi ${kernel_addr_r} ${fdtcontroladdr}
 ```

@@ -47,10 +47,11 @@ Spikes live in `~/code/omarchy-mac-iso-spike/`. Reports:
 
 USB-to-USB `dd` (through last partition, not whole disk) is proven from
 the installed Omarchy (2026-08-23): 14.9G Lexar → 14.5G stick, then that
-stick booted to autologin root, `gum 2.0.0`, `fnmode=1`. We have not run
-`omarchy-mac-install` from a booted live USB. Overlay + `switch_root`,
-systemd userspace, and Wi-Fi association are done (2026-08-23). Not yet:
-LUKS, Omarchy packages, or install onto internal NVMe.
+stick booted to autologin root, `gum 2.0.0`, `fnmode=1`. Proven from a
+booted live USB the same day: 14.5G stick → Lexar; U-Boot skipped
+`05dc:c753` until `usb reset` twice, then the Lexar booted. Overlay +
+`switch_root`, systemd userspace, and Wi-Fi association are done
+(2026-08-23). Not yet: LUKS, Omarchy packages, or install onto internal NVMe.
 
 ## Architecture: one rootfs, two front doors
 
