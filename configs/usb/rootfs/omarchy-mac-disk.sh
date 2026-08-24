@@ -117,6 +117,7 @@ clamp_free_region() {
 }
 
 # Existing System ESP: GPT ESP type, or FAT labelled EFI*.
+# lsblk -l so tree glyphs are not part of NAME.
 existing_esp_on() {
   local disk=$1 name type label
   while read -r name type label; do
@@ -130,7 +131,7 @@ existing_esp_on() {
       printf '/dev/%s\n' "$name"
       return 0
     fi
-  done < <(lsblk -n -o NAME,PARTTYPE,LABEL "/dev/$disk" 2>/dev/null)
+  done < <(lsblk -ln -o NAME,PARTTYPE,LABEL "/dev/$disk" 2>/dev/null)
   return 1
 }
 
