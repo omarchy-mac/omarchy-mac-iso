@@ -465,17 +465,25 @@ install_into_free_space() {
   dd if="$live_partition" of="$root_part" bs=4M status=progress conv=fsync oflag=sync
   sync
   partprobe "$target_dev" 2>/dev/null || true
+  command -v udevadm >/dev/null && udevadm settle --timeout=5 || true
+
+  # dd copies the live UUID; udisks will remount it. Unique UUID first.
+  for _ in 1 2 3 4 5 6; do
+    m=$(findmnt -n -o TARGET "$root_part" || true)
+    [[ -z $m ]] && break
+    umount "$m" || umount -l "$m" || true
+    sleep 0.5
+  done
+  findmnt -n "$root_part" >/dev/null && fail "$root_part still mounted; cannot btrfstune"
+  if command -v btrfs >/dev/null; then
+    btrfs device scan --forget "$root_part" || true
+  fi
+  btrfstune -f -u "$root_part"
 
   root_mnt=$(mktemp -d)
   mount -o subvol=@ "$root_part" "$root_mnt"
   btrfs filesystem resize max "$root_mnt"
   btrfs filesystem label "$root_mnt" OMARCHYROOT
-  umount "$root_mnt"
-  if command -v btrfs >/dev/null; then
-    btrfs device scan --forget "$root_part" || true
-  fi
-  btrfstune -f -u "$root_part"
-  mount -o subvol=@ "$root_part" "$root_mnt"
   root_uuid=$(blkid -s UUID -o value "$root_part")
   [[ -n $root_uuid ]] || fail "no UUID on $root_part"
 
