@@ -51,7 +51,9 @@ stick booted to autologin root, `gum 2.0.0`, `fnmode=1`. Proven from a
 booted live USB the same day: 14.5G stick → Lexar; U-Boot skipped
 `05dc:c753` until `usb reset` twice, then the Lexar booted. Overlay +
 `switch_root`, systemd userspace, and Wi-Fi association are done
-(2026-08-23). Not yet: LUKS, Omarchy packages, or install onto internal NVMe.
+(2026-08-23). Partition install (ESP + persistent USB root, no overlay)
+is in tree, not yet proven on metal. Not yet: LUKS, Omarchy packages, or
+install onto internal NVMe.
 
 ## Architecture: one rootfs, two front doors
 

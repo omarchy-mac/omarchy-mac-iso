@@ -1,0 +1,51 @@
+#!/usr/bin/ash
+# SPDX-License-Identifier: MIT
+#
+# Root is on USB. dwc3-apple can take several seconds. Wait for the
+# UUID (or OMARCHYROOT) before the filesystems hook mounts it.
+
+hang() {
+  echo "==> $*" >/dev/console
+  echo "==> $*"
+  while true; do
+    sleep 3600
+  done
+}
+
+root_uuid_from_cmdline() {
+  local arg
+  for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+      root=UUID=*)
+        echo "${arg#root=UUID=}"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+run_hook() {
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm settle --timeout=10 2>/dev/null
+    udevadm trigger --action=add 2>/dev/null
+    udevadm settle --timeout=10 2>/dev/null
+  fi
+  sleep 2
+
+  uuid=$(root_uuid_from_cmdline || true)
+  i=0
+  while [ "$i" -lt 30 ]; do
+    if [ -n "$uuid" ] && [ -e /dev/disk/by-uuid/"$uuid" ]; then
+      echo "==> omarchy-usb-wait: root UUID=$uuid" >/dev/console
+      return 0
+    fi
+    if [ -e /dev/disk/by-label/OMARCHYROOT ]; then
+      echo "==> omarchy-usb-wait: root label=OMARCHYROOT" >/dev/console
+      return 0
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  hang "omarchy-usb-wait: root device never appeared (USB not enumerated?)"
+}

@@ -80,33 +80,17 @@ initramfs with `dwc3-apple`) and a btrfs payload labelled `OMARCHYLIVE`
 (subvol `@`, tiny busybox `/sbin/init`). No root required. Copying files
 onto an existing FAT stick is not enough — the payload is its own partition.
 
-S3 systemd userspace (not the Omarchy desktop) — needs root, `arch-install-scripts`:
+Systemd userspace (not the Omarchy desktop) — needs root, `arch-install-scripts`:
 
 ```
 sudo ./bin/omarchy-mac-iso-make --usb --rootfs
 ```
 
-Success prints `OMARCHY_MAC_USB_SYSTEMD` and an autologin root shell on tty1
-(proven on an M2 Max, 2026-08-23). `--rootfs` includes kernel modules, NetworkManager, `iwd`, Asahi mesa,
-asahi-audio, speakersafetyd, gum, `hid_apple fnmode=1`, and
-`appledrm show_notch=1`. Vendor firmware is copied from the internal ESP
-at boot. Still not the Omarchy desktop. `omarchy-mac-install` is on the live image
-and clones this disk onto another USB (refuses NVMe and APFS). First cut
-is a `dd` through the last partition (a 16GB-class stick is often a few
-hundred megabytes smaller than the live USB), not LUKS or Omarchy. It
-unmounts source and target first — cloning a mounted payload produced a
-btrfs-csum-corrupt copy that GRUB-booted then reset into NVMe. If this *is*
-the running live USB, the overlay lowerdir stays mounted and source is the
-overlay device (not `/dev/disk/by-label/OMARCHYLIVE`, which is wrong when a
-clone is plugged in). The clone gets a new btrfs UUID (after udev sees the payload; a first
-from-live run skipped `btrfstune` when `lsblk` still had empty FSTYPE).
-Proven from the installed Omarchy (2026-08-23): 14.9G Lexar → 14.5G stick,
-then that stick booted to autologin root, `gum version 2.0.0`, `fnmode=1`.
-Proven *on* the live USB (2026-08-23): 14.5G stick → Lexar, then that Lexar
-booted after `usb reset` twice (`05dc:c753` skipped until the bus came up).
-Wi-Fi: nmtui Rescan until SSIDs appear, then Activate or
-`nmcli device wifi connect 'SSID' password 'PSK'` (nmcli failed before a
-scan, succeeded after). Default `--usb` without `--rootfs` still hangs at busybox pid 1.
+Autologin root on tty1. Payload has NetworkManager, `iwd`, Asahi mesa,
+asahi-audio, gum, `hid_apple fnmode=1`, `appledrm show_notch=1`, parted,
+gptfdisk, btrfs-progs, dosfstools, and grub. Vendor firmware is copied from
+the internal ESP at boot. Default `--usb` without `--rootfs` still hangs at
+busybox pid 1.
 
 Flash (destroys the target stick):
 
@@ -114,12 +98,14 @@ Flash (destroys the target stick):
 sudo dd if=release/omarchy-mac-iso-usb/omarchy-mac-usb.img of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
+### U-Boot
+
 **Shutdown, then power on** — a warm reboot often leaves Type-C/PD
-unenumerated in U-Boot (`0 Storage Device(s) found`). After a cold start,
-interrupt U-Boot (~1s) if NVMe already has Linux. If `usb storage` is empty
-or U-Boot skips the stick (`Cannot read configuration, skipping device
-05dc:c753` on the Lexar), `usb reset` until storage appears (twice on
-metal, 2026-08-23), then load the stick's GRUB explicitly (do not `saveenv`):
+unenumerated (`0 Storage Device(s) found`). Interrupt U-Boot (~1s) if NVMe
+already has Linux. If `usb storage` is empty or U-Boot skips the stick
+(`Cannot read configuration, skipping device 05dc:c753` on the Lexar),
+`usb reset` until storage appears (twice on metal, 2026-08-23). Do not
+`saveenv`.
 
 ```
 usb reset
@@ -129,14 +115,24 @@ bootefi ${kernel_addr_r} ${fdtcontroladdr}
 ```
 
 `bootflow select` of the USB row can still load NVMe's
-`/EFI/BOOT/BOOTAA64.EFI` (same path on both ESPs). `bootcmd_usb0` is not
-defined on this U-Boot. A fresh UEFI-only Mac has no NVMe EFI payload, so
-the stick should win automatically after a cold start.
+`/EFI/BOOT/BOOTAA64.EFI`. `bootcmd_usb0` is not defined. USB GRUB prints
+`OMARCHY USB GRUB (not the NVMe ESP)`. Omarchy Linux / Advanced options
+means you are on NVMe.
 
-USB GRUB prints `OMARCHY USB GRUB (not the NVMe ESP)` and has one entry.
-Omarchy Linux / Advanced options means you are on NVMe.
+Wi-Fi: nmtui Rescan until SSIDs appear, then Activate or
+`nmcli device wifi connect 'SSID' password 'PSK'`.
 
-Busybox `--usb` prints `OMARCHY_MAC_USB_READY`, then
-`OMARCHY_MAC_USB_USERSPACE pid=1`, and hangs. `--usb --rootfs` prints
-`OMARCHY_MAC_USB_SYSTEMD` and drops to a root shell. Neither is a full
-Omarchy desktop or installer.
+### Clone vs install
+
+On the live USB, `omarchy-mac-install` (refuses NVMe and Apple partition
+GUIDs):
+
+- **Clone** — `dd` through the last partition onto another stick (a 16GB-class
+  stick is often smaller than the live USB). Unmounts source and target first
+  unless this *is* the running live overlay. Rewrites the clone btrfs UUID.
+  Proven from Omarchy and from the live USB (2026-08-23): Lexar ↔ 14.5G stick,
+  `gum 2.0.0`, `fnmode=1`.
+- **Install** — GPT ESP (`OMARCHYBOOT`) + btrfs root (`OMARCHYROOT`) filling
+  the disk, copy the payload, `btrfs resize max`, GRUB with `root=UUID=`.
+  Persistent root, no overlay, no LUKS, not Omarchy packages. Untested on
+  metal. Rebuild `--usb --rootfs` so the live image has grub and dosfstools.

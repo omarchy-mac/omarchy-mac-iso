@@ -53,10 +53,10 @@ mkinitcpio -n \
 log "Building standalone GRUB"
 grub-mkstandalone -O arm64-efi \
   --fonts="" --locales="" --themes="" \
-  --install-modules="linux fat ext2 btrfs part_gpt search search_label search_fs_uuid echo normal configfile gzio reboot sleep" \
-  --modules="part_gpt fat search search_label linux echo normal" \
+  --install-modules="linux fat ext2 btrfs part_gpt search search_label search_fs_uuid search_fs_file echo normal configfile gzio reboot sleep" \
+  --modules="part_gpt fat search search_fs_file configfile linux echo normal" \
   -o "$work/BOOTAA64.EFI" \
-  "boot/grub/grub.cfg=$repo_root/configs/usb/grub.cfg"
+  "boot/grub/grub.cfg=$repo_root/configs/usb/grub-embed.cfg"
 
 # 512 MiB FAT ESP, then the btrfs payload, 1 MiB GPT head/tail.
 fat_mib=512
