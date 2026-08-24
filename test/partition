@@ -37,6 +37,8 @@ read -r hole_start hole_size <<<"$region"
 check "largest_free_region finds a hole" "[[ -n '$region' ]]"
 check "hole is at least 2GiB" "(( $hole_size >= 2048 ))"
 check "hole starts after ESP" "(( $hole_start >= 3000 ))"
+read -r inset_start inset_size <<<"$(inset_free_region "$hole_start" "$hole_size")"
+check "inset steps 1MiB into the hole" "(( $inset_start == $hole_start + 1 && $inset_size == $hole_size - 2 ))"
 
 parted -s "$img" mkpart root btrfs "${hole_start}MiB" "$((hole_start + 2000))MiB"
 
@@ -58,6 +60,7 @@ truncate -s 8G "$img_grow"
 grow_gpt_to_device "$img_grow"
 region=$(largest_free_region "$img_grow")
 read -r gs gsz <<<"$region"
+read -r gs gsz <<<"$(inset_free_region "$gs" "$gsz")"
 read -r gs gsz ge <<<"$(clamp_free_region "$gs" "$gsz" "$(device_mib "$img_grow")")"
 check "grown image has a hole" "(( $gsz >= 2048 ))"
 parted -s "$img_grow" mkpart root btrfs "${gs}MiB" "${ge}MiB"

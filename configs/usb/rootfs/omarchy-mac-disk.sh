@@ -91,6 +91,17 @@ grow_gpt_to_device() {
   fi
 }
 
+# Parted reports free-space start in whole MiB, which can land inside
+# the previous partition's last fractional MiB (Apple NVMe 4K). Step 1MiB
+# in from both ends.
+inset_free_region() {
+  local start=$1 size=$2
+  start=$(( start + 1 ))
+  size=$(( size - 2 ))
+  (( size >= MIN_FREE_MIB )) || return 1
+  printf '%s %s\n' "$start" "$size"
+}
+
 # start size -> start size end, clamped so parted does not treat the
 # exact device size as "outside of the device".
 clamp_free_region() {
