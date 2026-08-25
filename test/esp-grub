@@ -30,10 +30,12 @@ printf 'initrd\n' >"$fake_live/initramfs-linux-asahi.img"
 
 # --- own mode: UEFI-only ESP (m1n1 + vendorfw, no GRUB) ---
 own=$work/own-esp
-mkdir -p "$own/m1n1" "$own/vendorfw" "$own/asahi"
+mkdir -p "$own/m1n1" "$own/vendorfw" "$own/asahi" "$own/grub" "$own/EFI/BOOT"
 printf 'stage2\n' >"$own/m1n1/boot.bin"
 printf 'fw\n' >"$own/vendorfw/firmware.cpio"
 printf 'pair\n' >"$own/asahi/stub_info.json"
+printf 'pancake-menu\n' >"$own/grub/grub.cfg"
+printf 'efi-grub\n' >"$own/EFI/BOOT/grub.cfg"
 before=$(esp_protected_hashes "$own")
 
 esp_copy_unique_kernels "$fake_live" "$own"
@@ -43,6 +45,12 @@ after=$(esp_protected_hashes "$own")
 check "own mode writes BOOTAA64.EFI" "[[ -f '$own/EFI/BOOT/BOOTAA64.EFI' ]]"
 check "own mode writes omarchy-mac-root marker" "[[ -f '$own/omarchy-mac-root' ]]"
 check "own mode grub.cfg names the root UUID" "grep -q 'root=UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' '$own/grub/grub.cfg'"
+check "own mode kept pancake grub.cfg as omarchy-bak" \
+  "grep -qx pancake-menu '$own/grub/grub.cfg.omarchy-bak'"
+check "own mode kept EFI/BOOT/grub.cfg as omarchy-bak" \
+  "grep -qx efi-grub '$own/EFI/BOOT/grub.cfg.omarchy-bak'"
+check "own mode does not bak a missing BOOTAA64.EFI" \
+  "[[ ! -e '$own/EFI/BOOT/BOOTAA64.EFI.omarchy-bak' ]]"
 check "own mode copies vmlinuz under EFI/omarchy" "[[ -f '$own/EFI/omarchy/vmlinuz' ]]"
 check "own mode copies initrd under EFI/omarchy" "[[ -f '$own/EFI/omarchy/initramfs.img' ]]"
 check "own mode does not drop vmlinuz-* on the ESP root" \
@@ -57,6 +65,7 @@ pig=$work/pig-esp
 mkdir -p "$pig/EFI/BOOT" "$pig/grub" "$pig/m1n1"
 printf 'EXISTING-GRUB\n' >"$pig/EFI/BOOT/BOOTAA64.EFI"
 printf 'menuentry existing {}\n' >"$pig/grub/grub.cfg"
+printf 'old-custom\n' >"$pig/grub/custom.cfg"
 printf 'stage2\n' >"$pig/m1n1/boot.bin"
 printf 'EXISTING-GRUB\n' >"$work/boot.aa64.expected"
 before_pig=$(esp_protected_hashes "$pig")
@@ -66,6 +75,15 @@ after_pig=$(esp_protected_hashes "$pig")
 check "piggyback leaves BOOTAA64.EFI bytes unchanged" \
   "cmp -s '$pig/EFI/BOOT/BOOTAA64.EFI' '$work/boot.aa64.expected'"
 check "piggyback writes custom.cfg" "[[ -f '$pig/grub/custom.cfg' ]]"
+check "piggyback kept previous custom.cfg as omarchy-bak" \
+  "grep -qx old-custom '$pig/grub/custom.cfg.omarchy-bak'"
+check "piggyback kept grub.cfg as omarchy-bak" \
+  "grep -q 'menuentry existing' '$pig/grub/grub.cfg.omarchy-bak'"
+esp_backup_existing "$pig" grub/custom.cfg
+check "second backup does not clobber the first omarchy-bak" \
+  "grep -qx old-custom '$pig/grub/custom.cfg.omarchy-bak'"
+check "second backup writes a timestamped copy" \
+  "compgen -G '$pig/grub/custom.cfg.omarchy-bak.*' >/dev/null"
 check "piggyback custom.cfg loads EFI/omarchy/vmlinuz" \
   "grep -q '/EFI/omarchy/vmlinuz' '$pig/grub/custom.cfg'"
 check "piggyback custom.cfg names the new UUID" \

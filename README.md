@@ -171,7 +171,10 @@ GUIDs):
   recipe as wipe-USB, marker `/omarchy-mac-root`, never `mkfs` or
   `update-m1n1`. Kernel/initrd go in `EFI/omarchy/` so a later
   `grub-mkconfig` on the shared ESP does not pick them as `vmlinuz-*`.
-  `m1n1/` / `vendorfw/` / `asahi/` hashes must match after. A fourth
+  `m1n1/` / `vendorfw/` / `asahi/` hashes must match after.
+  Existing `BOOTAA64.EFI` / `grub.cfg` / `custom.cfg` are copied to
+  `*.omarchy-bak` on the ESP before overwrite (timestamped if a bak
+  is already there) so macOS can restore without the USB. A fourth
   menu item writes GRUB for an existing `OMARCHYROOT` without `mkpart`.
   **Own-mode metal 2026-08-25:** hid NVMe GRUB, rebuilt live USB, free-space
   `mkpart` p7, wrote `BOOTAA64.EFI`, USB unplugged → `root@omarchy-mac`.
