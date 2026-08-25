@@ -70,6 +70,8 @@ check "rootfs extra packages omit asahi-scripts" \
   bash -c '! grep -qx asahi-scripts "'"${repo_root}"'/configs/usb/rootfs/packages"'
 check "rootfs installs local omarchy tarball" grep -q 'omarchy-keyring' \
   "${repo_root}/builder/build-rootfs.sh"
+check "rootfs finds local packages via SUDO_USER home" grep -q SUDO_USER \
+  "${repo_root}/builder/build-rootfs.sh"
 check "rootfs copies payload pacman.conf" grep -q 'configs/usb/rootfs/pacman.conf' \
   "${repo_root}/builder/build-rootfs.sh"
 check "payload pacman.conf has omarchy-aarch64" grep -q '\[omarchy-aarch64\]' \

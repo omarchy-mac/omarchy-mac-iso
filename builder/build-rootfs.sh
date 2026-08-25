@@ -38,9 +38,16 @@ for pkg in "${forbidden_packages[@]}"; do
 done
 
 find_local_pkg() {
-  local name=$1 dir f
+  local name=$1 dir f sudo_home=""
+  # sudo ./bin/omarchy-mac-iso-make sets HOME=/root; tarballs live in
+  # the invoking user's ~/.local/share/omarchy/build-output.
+  if [[ -n ${SUDO_USER:-} ]]; then
+    sudo_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+  fi
   for dir in \
     ${OMARCHY_LOCAL_PACKAGES:+"$OMARCHY_LOCAL_PACKAGES"} \
+    ${sudo_home:+"$sudo_home/.local/share/omarchy/build-output"} \
+    ${OMARCHY_PATH:+"$OMARCHY_PATH/build-output"} \
     "${HOME}/.local/share/omarchy/build-output" \
     "${repo_root}/../omarchy-mac/build-output"; do
     [[ -d $dir ]] || continue
@@ -106,7 +113,7 @@ pacstrap -c "$mnt" base networkmanager iwd mesa asahi-audio \
 local_pkgs=()
 for name in omarchy-keyring ttf-jetbrains-mono-nerd-basic omarchy-settings omarchy; do
   f=$(find_local_pkg "$name") \
-    || fail "no $name-*.pkg.tar.* — set OMARCHY_LOCAL_PACKAGES or build omarchy first"
+    || fail "no $name-*.pkg.tar.* (sudo HOME is /root; set OMARCHY_LOCAL_PACKAGES or build omarchy as $SUDO_USER)"
   local_pkgs+=("$f")
 done
 log "pacman -U ${local_pkgs[*]##*/}"
