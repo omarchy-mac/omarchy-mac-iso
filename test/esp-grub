@@ -43,8 +43,10 @@ after=$(esp_protected_hashes "$own")
 check "own mode writes BOOTAA64.EFI" "[[ -f '$own/EFI/BOOT/BOOTAA64.EFI' ]]"
 check "own mode writes omarchy-mac-root marker" "[[ -f '$own/omarchy-mac-root' ]]"
 check "own mode grub.cfg names the root UUID" "grep -q 'root=UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' '$own/grub/grub.cfg'"
-check "own mode copies unique vmlinuz" "[[ -f '$own/vmlinuz-omarchy-usb-root' ]]"
-check "own mode copies unique initrd" "[[ -f '$own/initramfs-omarchy-usb-root.img' ]]"
+check "own mode copies vmlinuz under EFI/omarchy" "[[ -f '$own/EFI/omarchy/vmlinuz' ]]"
+check "own mode copies initrd under EFI/omarchy" "[[ -f '$own/EFI/omarchy/initramfs.img' ]]"
+check "own mode does not drop vmlinuz-* on the ESP root" \
+  "! compgen -G '$own/vmlinuz-*' >/dev/null"
 check "own mode leaves m1n1/vendorfw/asahi hashes unchanged" "[[ '$before' == '$after' ]]"
 check "own mode does not format away m1n1/boot.bin" "[[ -f '$own/m1n1/boot.bin' ]]"
 check "embed searches /omarchy-mac-root" "grep -q 'search --no-floppy --file /omarchy-mac-root' '$embed'"
@@ -64,6 +66,8 @@ after_pig=$(esp_protected_hashes "$pig")
 check "piggyback leaves BOOTAA64.EFI bytes unchanged" \
   "cmp -s '$pig/EFI/BOOT/BOOTAA64.EFI' '$work/boot.aa64.expected'"
 check "piggyback writes custom.cfg" "[[ -f '$pig/grub/custom.cfg' ]]"
+check "piggyback custom.cfg loads EFI/omarchy/vmlinuz" \
+  "grep -q '/EFI/omarchy/vmlinuz' '$pig/grub/custom.cfg'"
 check "piggyback custom.cfg names the new UUID" \
   "grep -q 'root=UUID=11111111-2222-3333-4444-555555555555' '$pig/grub/custom.cfg'"
 check "piggyback sources custom.cfg from grub.cfg" "grep -q custom.cfg '$pig/grub/grub.cfg'"

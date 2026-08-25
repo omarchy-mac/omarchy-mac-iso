@@ -12,23 +12,27 @@ esp_protected_hashes() {
   (cd "$esp_mnt" && find asahi m1n1 vendorfw EFI/asahi -type f 2>/dev/null | sort | xargs -r sha256sum) || true
 }
 
+# Under EFI/omarchy/ so grub-mkconfig 10_linux (/boot/vmlinuz-*) does
+# not treat the installer kernel as the default Omarchy entry.
 esp_copy_unique_kernels() {
   local live_esp_mnt=$1 esp_mnt=$2
   [[ -f $live_esp_mnt/vmlinuz-linux-asahi ]] || return 1
   [[ -f $live_esp_mnt/initramfs-linux-asahi.img ]] || return 1
-  cp "$live_esp_mnt/vmlinuz-linux-asahi" "$esp_mnt/vmlinuz-omarchy-usb-root"
-  cp "$live_esp_mnt/initramfs-linux-asahi.img" "$esp_mnt/initramfs-omarchy-usb-root.img"
+  mkdir -p "$esp_mnt/EFI/omarchy"
+  cp "$live_esp_mnt/vmlinuz-linux-asahi" "$esp_mnt/EFI/omarchy/vmlinuz"
+  cp "$live_esp_mnt/initramfs-linux-asahi.img" "$esp_mnt/EFI/omarchy/initramfs.img"
 }
 
 # Piggyback on an OS that already owns BOOTAA64.EFI (custom.cfg only).
 write_piggyback_esp_grub() {
   local esp_mnt=$1 root_uuid=$2
   mkdir -p "$esp_mnt/grub"
+  : >"$esp_mnt/omarchy-mac-root"
   cat >"$esp_mnt/grub/custom.cfg" <<EOF
 menuentry 'Omarchy Mac (new root $root_uuid)' {
-  search --no-floppy --file /initramfs-omarchy-usb-root.img --set=root
-  linux /vmlinuz-omarchy-usb-root root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
-  initrd /initramfs-omarchy-usb-root.img
+  search --no-floppy --file /omarchy-mac-root --set=root
+  linux /EFI/omarchy/vmlinuz root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
+  initrd /EFI/omarchy/initramfs.img
 }
 EOF
   if [[ -f $esp_mnt/grub/grub.cfg ]] && ! grep -q custom.cfg "$esp_mnt/grub/grub.cfg"; then
@@ -55,8 +59,8 @@ set default=0
 search --no-floppy --file /omarchy-mac-root --set=root
 
 menuentry 'Omarchy Mac' {
-  linux /vmlinuz-omarchy-usb-root root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
-  initrd /initramfs-omarchy-usb-root.img
+  linux /EFI/omarchy/vmlinuz root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
+  initrd /EFI/omarchy/initramfs.img
 }
 EOF
   cp "$esp_mnt/grub/grub.cfg" "$esp_mnt/EFI/BOOT/grub.cfg"

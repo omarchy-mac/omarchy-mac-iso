@@ -109,7 +109,7 @@ check "install copies initramfs from live ESP" grep -q 'initramfs-linux-asahi.im
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "install initrd name is unique vs NVMe" grep -q initramfs-omarchy-usb-root.img \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
-check "free-space install uses unique vmlinuz on shared ESP" grep -q vmlinuz-omarchy-usb-root \
+check "System ESP kernels live under EFI/omarchy" grep -q 'EFI/omarchy/vmlinuz' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
 check "free-space install refuses to change BOOTAA64.EFI" grep -q 'BOOTAA64.EFI changed' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"

@@ -169,7 +169,8 @@ GUIDs):
   `BOOTAA64.EFI` already exists (`custom.cfg` only, file unchanged);
   **own** if the ESP is UEFI-only (no GRUB) — same `grub-mkstandalone`
   recipe as wipe-USB, marker `/omarchy-mac-root`, never `mkfs` or
-  `update-m1n1`. Unique `vmlinuz-omarchy-usb-root` / initrd names.
+  `update-m1n1`. Kernel/initrd go in `EFI/omarchy/` so a later
+  `grub-mkconfig` on the shared ESP does not pick them as `vmlinuz-*`.
   `m1n1/` / `vendorfw/` / `asahi/` hashes must match after. A fourth
   menu item writes GRUB for an existing `OMARCHYROOT` without `mkpart`.
   **Own-mode metal 2026-08-25:** hid NVMe GRUB, rebuilt live USB, free-space
