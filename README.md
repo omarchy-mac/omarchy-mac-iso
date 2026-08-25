@@ -172,3 +172,8 @@ GUIDs):
   `update-m1n1`. Unique `vmlinuz-omarchy-usb-root` / initrd names.
   `m1n1/` / `vendorfw/` / `asahi/` hashes must match after. A fourth
   menu item writes GRUB for an existing `OMARCHYROOT` without `mkpart`.
+  **Own-mode metal 2026-08-25:** hid NVMe GRUB, rebuilt live USB, free-space
+  `mkpart` p7, wrote `BOOTAA64.EFI`, USB unplugged → `root@omarchy-mac`.
+  U-Boot only loads one `BOOTAA64.EFI`; own-mode replaces an existing
+  Omarchy GRUB. Restore pancake with the original file (not the live USB's)
+  then `grub-mkconfig` so `quiet splash` brings the branded Plymouth unlock.

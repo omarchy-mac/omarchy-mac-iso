@@ -400,10 +400,14 @@ GitHub Releases vs R2 vs split assets.
    ESP tarball on LINUXBAK; hid NVMe `BOOTAA64.EFI`; USB GRUB appeared
    after `usb reset` (not a no-key autoboot). macOS restore: `diskutil
    mount "EFI - OMARC"` failed; `mount -t msdos /dev/disk0s4 /Volumes/esp`
-   then rename `.omarchy-bak` back. **Rung 2 open:** rebuild live USB with
-   own-mode installer, write GRUB for p7, cold boot with USB unplugged.
-   Do not re-run Asahi's installer. U-Boot is Asahi (`m1n1/boot.bin`), not
-   stock Mac firmware.
+   then rename `.omarchy-bak` back. **Rung 2 done 2026-08-25:** rebuilt
+   live USB (`--usb --rootfs`, SHARE mkdir), hid NVMe GRUB, free-space
+   install `mkpart` p7 (UUID `2bd9f673-…`), wrote System ESP
+   `BOOTAA64.EFI` (`m1n1`/`vendorfw`/`asahi` unchanged), USB unplugged →
+   `root@omarchy-mac`. Own-mode replaces pancake GRUB (one `BOOTAA64.EFI`).
+   Restoring the original file plus `grub-mkconfig` (`quiet splash`) is
+   how this desktop and branded Plymouth come back. Do not re-run Asahi's
+   installer. U-Boot is Asahi (`m1n1/boot.bin`), not stock Mac firmware.
 6. CI green on `workflow_dispatch` before nightly.
 
 ## Coordination
