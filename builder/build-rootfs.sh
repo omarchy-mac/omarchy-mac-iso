@@ -76,6 +76,7 @@ cp -a "/usr/lib/modules/$kver" "$mnt/usr/lib/modules/"
 install -m644 "$repo_root/configs/usb/rootfs/issue" "$mnt/etc/issue"
 install -d "$mnt/etc/systemd/system"
 install -d "$mnt/usr/local/sbin"
+install -d "$mnt/usr/local/share/omarchy-mac-iso"
 install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-install" \
   "$mnt/usr/local/sbin/omarchy-mac-install"
 install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-disk.sh" \

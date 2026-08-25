@@ -124,6 +124,10 @@ check "own-mode writes BOOTAA64 when the ESP has none" grep -q write_owned_esp_g
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "rootfs copies system GRUB embed" grep -q grub-embed-system.cfg \
   "${repo_root}/builder/build-rootfs.sh"
+check "rootfs creates SHARE before copying disk helpers" \
+  awk '/install -d .*usr\/local\/share\/omarchy-mac-iso"/{d=1}
+       /omarchy-mac-disk.sh/{exit !d}' \
+  "${repo_root}/builder/build-rootfs.sh"
 check "usb hook copies vendor firmware" grep -q '/lib/firmware/vendor' \
   "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-live"
 
