@@ -1,12 +1,18 @@
 #!/bin/bash
 # Usage: build-rootfs.sh <out-payload.img>
-# Pacstrap Arch Linux ARM `base` onto btrfs @ (label OMARCHYLIVE).
-# Needs root. This is S3: systemd userspace, not the Omarchy desktop.
+# Pacstrap Arch Linux ARM `base` plus the Omarchy shell (hyprland,
+# quickshell, sddm, omarchy from local tarballs) onto btrfs @ (label
+# OMARCHYLIVE). Needs root. Live session stays multi-user.target /
+# autologin — not a graphical login. Do not pacstrap linux-asahi or
+# asahi-scripts (their hooks mount the host ESP).
 set -euo pipefail
 
 out="$1"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-payload_bytes=${OMARCHY_USB_PAYLOAD_BYTES:-$((3 * 1024 * 1024 * 1024))}
+# Shell packages no longer fit in 3GiB (base + mesa was ~2.1GiB).
+payload_bytes=${OMARCHY_USB_PAYLOAD_BYTES:-$((8 * 1024 * 1024 * 1024))}
+packages_file=$repo_root/configs/usb/rootfs/packages
+forbidden_packages=(linux-asahi asahi-scripts m1n1 uboot-asahi)
 
 log() { printf '==> %s\n' "$*" >&2; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -15,6 +21,37 @@ fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 command -v pacstrap >/dev/null || fail "pacstrap not found — pacman -S arch-install-scripts"
 command -v mkfs.btrfs >/dev/null || fail "need btrfs-progs"
 command -v losetup >/dev/null || fail "need losetup"
+
+read_package_list() {
+  local pkg
+  [[ -f $packages_file ]] || fail "missing $packages_file"
+  while read -r pkg; do
+    [[ -z $pkg || $pkg == \#* ]] && continue
+    printf '%s\n' "$pkg"
+  done <"$packages_file"
+}
+
+for pkg in "${forbidden_packages[@]}"; do
+  if read_package_list | grep -qx "$pkg"; then
+    fail "refusing to pacstrap $pkg (mounts or rewrites the host ESP)"
+  fi
+done
+
+find_local_pkg() {
+  local name=$1 dir f
+  for dir in \
+    ${OMARCHY_LOCAL_PACKAGES:+"$OMARCHY_LOCAL_PACKAGES"} \
+    "${HOME}/.local/share/omarchy/build-output" \
+    "${repo_root}/../omarchy-mac/build-output"; do
+    [[ -d $dir ]] || continue
+    for f in "$dir"/${name}-*.pkg.tar.*; do
+      [[ -f $f ]] || continue
+      printf '%s\n' "$f"
+      return 0
+    done
+  done
+  return 1
+}
 
 loop=""
 mnt=""
@@ -59,10 +96,28 @@ mkdir -p "$mnt/run" "$mnt/boot"
 mount -t tmpfs tmpfs "$mnt/run"
 mount -t tmpfs tmpfs "$mnt/boot"
 
-log "pacstrap base networkmanager iwd mesa asahi-audio gum"
+mapfile -t extra_packages < <(read_package_list)
+log "pacstrap base networkmanager iwd mesa asahi-audio gum + ${extra_packages[*]}"
 pacstrap -c "$mnt" base networkmanager iwd mesa asahi-audio \
   alsa-ucm-conf-asahi speakersafetyd pipewire-pulse gum \
-  parted gptfdisk btrfs-progs dosfstools grub
+  parted gptfdisk btrfs-progs dosfstools grub \
+  "${extra_packages[@]}"
+
+local_pkgs=()
+for name in omarchy-keyring ttf-jetbrains-mono-nerd-basic omarchy-settings omarchy; do
+  f=$(find_local_pkg "$name") \
+    || fail "no $name-*.pkg.tar.* — set OMARCHY_LOCAL_PACKAGES or build omarchy first"
+  local_pkgs+=("$f")
+done
+log "pacman -U ${local_pkgs[*]##*/}"
+pacman -U --noconfirm --needed --root "$mnt" --cachedir /var/cache/pacman/pkg \
+  "${local_pkgs[@]}"
+
+install -m644 "$repo_root/configs/usb/rootfs/pacman.conf" "$mnt/etc/pacman.conf"
+[[ -f /etc/pacman.d/mirrorlist ]] || fail "host /etc/pacman.d/mirrorlist missing"
+install -m644 /etc/pacman.d/mirrorlist "$mnt/etc/pacman.d/mirrorlist"
+[[ -f /etc/pacman.d/mirrorlist.asahi-alarm ]] || fail "host asahi-alarm mirrorlist missing"
+install -m644 /etc/pacman.d/mirrorlist.asahi-alarm "$mnt/etc/pacman.d/mirrorlist.asahi-alarm"
 
 umount "$mnt/boot"
 umount "$mnt/run"

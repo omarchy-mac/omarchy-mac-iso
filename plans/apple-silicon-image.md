@@ -347,15 +347,16 @@ the busybox tree on `@` with Arch `base` / systemd.
 autologin root shell, `nmtui` + brcmfmac scan, then `ping www.google.com`.
 wlan0 is missing until nmtui Rescan; after that both nmtui Activate and
 `nmcli … password` have worked. `gum` 0.17.0 and `hid_apple fnmode=1`
-proven on metal. Not the Omarchy desktop. Asahi mesa / asahi-audio /
-speakersafetyd / gum and `fnmode=1` / `show_notch=1` go in this payload
-(not `asahi-scripts`).
-Then the fork's package set →
-provisioning with hardware-specific work that is *not* per-machine done at
-build time (audio stack, `fnmode`, notch modprobe) → defer keymap / user /
-hostname / anything that reads this panel to first boot or the installer →
-produce `root.img` (btrfs, minimal, sparse, **not** internally zstd'd for
-publication).
+proven on metal. **2026-08-25:** also pacstraps the `omarchy` package
+depends (Hyprland, Quickshell, SDDM, uwsm) and `pacman -U`s local
+`omarchy` / `omarchy-settings` / `omarchy-keyring` /
+`ttf-jetbrains-mono-nerd-basic` tarballs. Live target stays
+`multi-user.target`. Still not `linux-asahi` / `asahi-scripts`. Default
+payload 8GiB. Full `omarchy-base.packages` (Chromium, etc.) and a
+graphical live session are later. `fnmode=1` / `show_notch=1` stay in
+this payload. Defer keymap / user / hostname to first boot or the
+installer. Produce `root.img` (btrfs, minimal, sparse, **not** internally
+zstd'd for publication).
 
 Regenerate the btrfs UUID at install (`btrfstune -u`).
 
