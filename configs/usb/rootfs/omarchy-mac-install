@@ -221,6 +221,70 @@ clone_live_usb() {
   lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID "$target_dev"
 }
 
+# Live USB stays tty autologin. Installed roots get a user, SDDM, and
+# graphical.target. Mount @home before useradd so /home isn't on @.
+personalize_graphical_session() {
+  local root_mnt=$1 root_part=$2
+  local user pass pass2 home_mounted=0
+  local reserved='^(root|bin|daemon|nobody|dbus|alpm|git|avahi|polkitd|sddm|uuidd)$'
+
+  [[ -x $root_mnt/usr/bin/sddm ]] \
+    || fail "sddm not in this payload — rebuild with --usb --rootfs"
+  [[ -f $root_mnt/usr/share/wayland-sessions/omarchy.desktop ]] \
+    || fail "omarchy.desktop session missing — rebuild with --usb --rootfs"
+
+  if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
+    printf 'dry-run: useradd + enable sddm + graphical.target\n'
+    return 0
+  fi
+
+  user=$(gum input --placeholder "username" --header "Desktop user (not root)")
+  [[ -n $user ]] || fail "cancelled"
+  [[ $user =~ ^[a-z_][a-z0-9_-]*$ ]] || fail "invalid username"
+  [[ $user =~ $reserved ]] && fail "username $user is reserved"
+
+  pass=$(gum input --password --placeholder "password" --header "Password for $user")
+  [[ -n $pass ]] || fail "cancelled"
+  pass2=$(gum input --password --placeholder "password" --header "Confirm password")
+  [[ $pass == "$pass2" ]] || fail "passwords do not match"
+
+  mkdir -p "$root_mnt/home"
+  if ! findmnt "$root_mnt/home" >/dev/null; then
+    mount -o subvol=@home "$root_part" "$root_mnt/home"
+    home_mounted=1
+  fi
+  useradd --root "$root_mnt" -m -s /bin/bash \
+    -G wheel,video,audio,input,render "$user"
+  printf '%s:%s\n' "$user" "$pass" | chpasswd --root "$root_mnt"
+  if (( home_mounted == 1 )); then
+    umount "$root_mnt/home"
+  fi
+
+  rm -f "$root_mnt/etc/systemd/system/getty@tty1.service.d/autologin.conf"
+  rmdir "$root_mnt/etc/systemd/system/getty@tty1.service.d" 2>/dev/null || true
+
+  mkdir -p "$root_mnt/etc/sddm.conf.d"
+  cat >"$root_mnt/etc/sddm.conf.d/autologin.conf" <<EOF
+[Autologin]
+User=$user
+Session=omarchy.desktop
+EOF
+  if [[ -f $root_mnt/etc/pam.d/sddm ]]; then
+    sed -i '/-auth.*pam_gnome_keyring\.so/d' "$root_mnt/etc/pam.d/sddm"
+    sed -i '/-password.*pam_gnome_keyring\.so/d' "$root_mnt/etc/pam.d/sddm"
+  fi
+  install -d -m750 "$root_mnt/etc/sudoers.d"
+  printf '%%wheel ALL=(ALL:ALL) ALL\n' >"$root_mnt/etc/sudoers.d/wheel"
+  chmod 440 "$root_mnt/etc/sudoers.d/wheel"
+
+  systemctl --root="$root_mnt" disable omarchy-mac-usb-ready.service 2>/dev/null || true
+  systemctl --root="$root_mnt" enable sddm.service
+  systemctl --root="$root_mnt" set-default graphical.target
+  systemctl --root="$root_mnt" mask NetworkManager-wait-online.service 2>/dev/null || true
+
+  printf '==> desktop user %s, SDDM autologin, graphical.target\n' "$user"
+}
+
 install_persistent_root() {
   local payload_bytes min_bytes source_esp esp_part root_part
   local root_mnt esp_mnt live_esp_mnt
@@ -293,11 +357,12 @@ install_persistent_root() {
   printf 'UUID=%s /var/log btrfs subvol=@log,compress=zstd:1 0 0\n' "$root_uuid" >>"$root_mnt/etc/fstab"
   printf 'omarchy-mac\n' >"$root_mnt/etc/hostname"
   cat >"$root_mnt/etc/issue" <<'EOF'
-Omarchy Mac USB root (not live, not the desktop).
-Wi-Fi: nmtui Rescan, then Activate.
+Omarchy Mac (installed). SDDM autologin.
+Wi-Fi: nmtui Rescan, then Activate if the session has no network.
 EOF
   rm -f "$root_mnt/omarchy-mac-overlay-write"
   : >"$root_mnt/etc/machine-id"
+  personalize_graphical_session "$root_mnt" "$root_part"
 
   work=$(mktemp -d)
   esp_mnt=$(mktemp -d)
@@ -568,11 +633,12 @@ install_into_free_space() {
   printf 'UUID=%s /var/log btrfs subvol=@log,compress=zstd:1 0 0\n' "$root_uuid" >>"$root_mnt/etc/fstab"
   printf 'omarchy-mac\n' >"$root_mnt/etc/hostname"
   cat >"$root_mnt/etc/issue" <<'EOF'
-Omarchy Mac USB root (not live, not the desktop).
-Wi-Fi: nmtui Rescan, then Activate.
+Omarchy Mac (installed). SDDM autologin.
+Wi-Fi: nmtui Rescan, then Activate if the session has no network.
 EOF
   rm -f "$root_mnt/omarchy-mac-overlay-write"
   : >"$root_mnt/etc/machine-id"
+  personalize_graphical_session "$root_mnt" "$root_part"
 
   esp_mode=$(apply_system_esp_bootloader "$esp_part" "$root_uuid" "$source_esp")
 

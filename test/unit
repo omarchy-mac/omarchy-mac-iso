@@ -96,6 +96,16 @@ check "install script rewrites clone btrfs UUID" grep -q 'btrfstune -f -u' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "install script offers persistent root install" grep -q 'Install to a blank USB' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installed root enables sddm" grep -q 'enable sddm.service' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installed root uses graphical.target" grep -q 'set-default graphical.target' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installed root creates a desktop user on @home" grep -q 'subvol=@home' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installed root drops getty autologin" grep -q 'autologin.conf' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "live rootfs stays multi-user.target" grep -q 'set-default multi-user.target' \
+  "${repo_root}/builder/build-rootfs.sh"
 check "install script offers free-space install" grep -q 'Install into free space' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "free-space install does not wipefs" \

@@ -162,9 +162,11 @@ GUIDs):
   Proven from Omarchy and from the live USB (2026-08-23): Lexar ↔ 14.5G stick,
   `gum 2.0.0`, `fnmode=1`.
 - **Install (wipe USB)** — GPT ESP (`OMARCHYBOOT`) + btrfs root filling the
-  disk. Proven on an M2 Max (2026-08-24): 14.5G stick, autologin
-  `root@omarchy-mac`, nmtui Rescan then Wi-Fi ping. Warm USB boot worked.
-  GRUB must search `/omarchy-usb-install`, not `/initramfs-linux-asahi.img`
+  disk. Prompts for a desktop user, enables SDDM autologin
+  (`omarchy.desktop` / Hyprland uwsm) and `graphical.target`. Live USB
+  stays tty autologin. Proven on an M2 Max (2026-08-24): 14.5G stick,
+  then console-only; graphical session not metal-proven yet. GRUB must
+  search `/omarchy-usb-install`, not `/initramfs-linux-asahi.img`
   (that file is the NVMe LUKS initramfs).
 - **Install into free space** — `parted mkpart` in an existing GPT hole only.
   Never `mklabel`/`wipefs`. Proven on the Lexar hole (keep live
