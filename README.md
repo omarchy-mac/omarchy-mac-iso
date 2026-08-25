@@ -80,17 +80,25 @@ initramfs with `dwc3-apple`) and a btrfs payload labelled `OMARCHYLIVE`
 (subvol `@`, tiny busybox `/sbin/init`). No root required. Copying files
 onto an existing FAT stick is not enough — the payload is its own partition.
 
-Systemd userspace (not the Omarchy desktop) — needs root, `arch-install-scripts`:
+Systemd userspace plus the Omarchy *shell* packages — needs root,
+`arch-install-scripts`, and local `omarchy-*.pkg.tar.*` (default
+`~/.local/share/omarchy/build-output`):
 
 ```
 sudo ./bin/omarchy-mac-iso-make --usb --rootfs
 ```
 
-Autologin root on tty1. Payload has NetworkManager, `iwd`, Asahi mesa,
-asahi-audio, gum, `hid_apple fnmode=1`, `appledrm show_notch=1`, parted,
-gptfdisk, btrfs-progs, dosfstools, and grub. Vendor firmware is copied from
+Autologin root on tty1 (`multi-user.target`, not SDDM). Payload is 8GiB
+btrfs: NetworkManager, Asahi mesa / asahi-audio, gum, Hyprland, Quickshell,
+SDDM, `omarchy` from those tarballs. Still does **not** pacstrap
+`linux-asahi` or `asahi-scripts` (host ESP). Vendor firmware is copied from
 the internal ESP at boot. Default `--usb` without `--rootfs` still hangs at
-busybox pid 1.
+busybox pid 1. Override size with `OMARCHY_USB_PAYLOAD_BYTES`; package
+search with `OMARCHY_LOCAL_PACKAGES`. Proven on metal 2026-08-25 (Lexar,
+8GiB `OMARCHYLIVE`, `bootflow` `usb_mass_storage`): autologin
+`root@omarchy-mac-live`, `pacman -Q` reported `omarchy 4.0.0-1`,
+`hyprland 0.56.1-3`, `quickshell 0.3.1-1`, `sddm 0.21.0-7`. Still a tty,
+not a graphical session.
 
 Flash (destroys the target stick):
 

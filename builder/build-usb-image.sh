@@ -127,7 +127,7 @@ cp "$repo_root/configs/usb/grub.cfg" "$out_dir/grub.cfg"
 
 git_ref="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 payload_kind="busybox pid 1"
-[[ ${OMARCHY_USB_ROOTFS:-} == 1 ]] && payload_kind="systemd base (pacstrap)"
+[[ ${OMARCHY_USB_ROOTFS:-} == 1 ]] && payload_kind="systemd + Omarchy shell (hyprland/quickshell/sddm, multi-user.target)"
 cat > "$out_dir/BUILD_INFO" <<EOF
 artifact: omarchy-mac-usb
 built_from_ref: $git_ref

@@ -62,6 +62,26 @@ check "NM live conf disables polkit auth" grep -q 'auth-polkit=false' \
   "${repo_root}/configs/usb/rootfs/nm-live.conf"
 check "rootfs pacstraps mesa and gum" grep -q ' mesa ' \
   "${repo_root}/builder/build-rootfs.sh"
+check "rootfs extra packages include hyprland" grep -qx hyprland \
+  "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs extra packages omit linux-asahi" \
+  bash -c '! grep -qx linux-asahi "'"${repo_root}"'/configs/usb/rootfs/packages"'
+check "rootfs extra packages omit asahi-scripts" \
+  bash -c '! grep -qx asahi-scripts "'"${repo_root}"'/configs/usb/rootfs/packages"'
+check "rootfs installs local omarchy tarball" grep -q 'omarchy-keyring' \
+  "${repo_root}/builder/build-rootfs.sh"
+check "rootfs finds local packages via SUDO_USER home" grep -q SUDO_USER \
+  "${repo_root}/builder/build-rootfs.sh"
+check "rootfs copies payload pacman.conf" grep -q 'configs/usb/rootfs/pacman.conf' \
+  "${repo_root}/builder/build-rootfs.sh"
+check "payload pacman.conf has omarchy-aarch64" grep -q '\[omarchy-aarch64\]' \
+  "${repo_root}/configs/usb/rootfs/pacman.conf"
+check "rootfs default payload is 8GiB" grep -q '8 \* 1024 \* 1024 \* 1024' \
+  "${repo_root}/builder/build-rootfs.sh"
+check "rootfs still tmpfs-isolates /boot" grep -q 'mount -t tmpfs tmpfs "$mnt/boot"' \
+  "${repo_root}/builder/build-rootfs.sh"
+check "rootfs unmounts nested pacstrap mounts" grep -q 'umount -R' \
+  "${repo_root}/builder/build-rootfs.sh"
 check "hid_apple fnmode=1 is in the tree" grep -q 'fnmode=1' \
   "${repo_root}/configs/usb/modprobe.d/hid_apple.conf"
 check "install script refuses Apple partition GUIDs" grep -q 7c3457ef \

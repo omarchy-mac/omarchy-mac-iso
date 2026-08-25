@@ -1,0 +1,14 @@
+# Extra packages on the USB rootfs (S3). Not linux-asahi, m1n1,
+# uboot-asahi, or asahi-scripts — those hooks mount the host ESP.
+# The `omarchy` tarball's depends; local .pkg.tar files are added in
+# build-rootfs.sh via OMARCHY_LOCAL_PACKAGES.
+hyprland
+quickshell
+uwsm
+sddm
+xdg-desktop-portal-hyprland
+snapper
+plymouth
+gnome-keyring
+pacman-contrib
+perl
