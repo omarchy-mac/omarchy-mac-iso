@@ -62,12 +62,23 @@ find_local_pkg() {
 
 loop=""
 mnt=""
+
+# pacstrap rbind-mounts /dev, /proc, /sys. umount of @ is busy until those
+# are gone. -R walks children first.
+unmount_tree() {
+  local dir=$1
+  [[ -n $dir && -d $dir ]] || return 0
+  findmnt "$dir" >/dev/null || return 0
+  umount -R "$dir" 2>/dev/null && return 0
+  local target
+  while read -r target; do
+    umount "$target" 2>/dev/null || true
+  done < <(findmnt -Rnc -o TARGET -- "$dir" 2>/dev/null | tac)
+  umount "$dir" 2>/dev/null || umount -l "$dir"
+}
+
 cleanup() {
-  if [[ -n $mnt ]]; then
-    umount "$mnt/boot" 2>/dev/null || true
-    umount "$mnt/run" 2>/dev/null || true
-    umount "$mnt" 2>/dev/null || true
-  fi
+  unmount_tree "$mnt" || true
   if [[ -n $loop ]]; then
     losetup -d "$loop" 2>/dev/null || true
   fi
@@ -204,7 +215,10 @@ systemctl --root="$mnt" set-default multi-user.target
 log "payload used $(du -sh "$mnt" | cut -f1) on the @ subvolume"
 
 sync
-umount "$mnt"
+unmount_tree "$mnt" || {
+  findmnt -R "$mnt" >&2 || true
+  fail "could not unmount payload $mnt"
+}
 mnt=""
 losetup -d "$loop"
 loop=""

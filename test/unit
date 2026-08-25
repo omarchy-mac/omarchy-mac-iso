@@ -80,6 +80,8 @@ check "rootfs default payload is 8GiB" grep -q '8 \* 1024 \* 1024 \* 1024' \
   "${repo_root}/builder/build-rootfs.sh"
 check "rootfs still tmpfs-isolates /boot" grep -q 'mount -t tmpfs tmpfs "$mnt/boot"' \
   "${repo_root}/builder/build-rootfs.sh"
+check "rootfs unmounts nested pacstrap mounts" grep -q 'umount -R' \
+  "${repo_root}/builder/build-rootfs.sh"
 check "hid_apple fnmode=1 is in the tree" grep -q 'fnmode=1' \
   "${repo_root}/configs/usb/modprobe.d/hid_apple.conf"
 check "install script refuses Apple partition GUIDs" grep -q 7c3457ef \
