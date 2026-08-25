@@ -12,23 +12,68 @@ esp_protected_hashes() {
   (cd "$esp_mnt" && find asahi m1n1 vendorfw EFI/asahi -type f 2>/dev/null | sort | xargs -r sha256sum) || true
 }
 
+# Copy an existing ESP file to *.omarchy-bak next to it (on the ESP, so
+# macOS can restore without the USB). If that bak already exists, keep
+# it and write a timestamped copy. No-op if the source is missing.
+esp_backup_existing() {
+  local esp_mnt=$1 rel=$2
+  local src=$esp_mnt/$rel dest n=0
+  [[ -f $src ]] || return 0
+  dest=$src.omarchy-bak
+  if [[ -e $dest ]]; then
+    dest=$src.omarchy-bak.$(date +%Y%m%d%H%M%S)
+    while [[ -e $dest ]]; do
+      n=$((n + 1))
+      dest=$src.omarchy-bak.$(date +%Y%m%d%H%M%S).$n
+    done
+  fi
+  cp -a "$src" "$dest" || return 1
+  printf '==> ESP backup %s -> %s\n' "$rel" "${dest#"$esp_mnt"/}" >&2
+}
+
+# 64MiB: one kernel + initrd plus slack. A full ESP mid-write is unbootable.
+ESP_MIN_FREE_BYTES=$((64 * 1024 * 1024))
+
+esp_require_free_bytes() {
+  local esp_mnt=$1 need=${2:-$ESP_MIN_FREE_BYTES}
+  local avail_kb
+  avail_kb=$(df -Pk "$esp_mnt" | awk 'NR==2 { print $4 }')
+  [[ $avail_kb =~ ^[0-9]+$ ]] || return 1
+  (( avail_kb * 1024 >= need )) || {
+    printf 'error: ESP %s has %sKiB free, need %s bytes\n' \
+      "$esp_mnt" "$avail_kb" "$need" >&2
+    return 1
+  }
+}
+
+# Under EFI/omarchy/ so grub-mkconfig 10_linux (/boot/vmlinuz-*) does
+# not treat the installer kernel as the default Omarchy entry.
+# Drop the legacy ESP-root names from earlier installs; do not bak
+# EFI/omarchy/ — those files are ours and ~50MiB each copy.
 esp_copy_unique_kernels() {
   local live_esp_mnt=$1 esp_mnt=$2
   [[ -f $live_esp_mnt/vmlinuz-linux-asahi ]] || return 1
   [[ -f $live_esp_mnt/initramfs-linux-asahi.img ]] || return 1
-  cp "$live_esp_mnt/vmlinuz-linux-asahi" "$esp_mnt/vmlinuz-omarchy-usb-root"
-  cp "$live_esp_mnt/initramfs-linux-asahi.img" "$esp_mnt/initramfs-omarchy-usb-root.img"
+  esp_require_free_bytes "$esp_mnt" || return 1
+  mkdir -p "$esp_mnt/EFI/omarchy"
+  cp "$live_esp_mnt/vmlinuz-linux-asahi" "$esp_mnt/EFI/omarchy/vmlinuz"
+  cp "$live_esp_mnt/initramfs-linux-asahi.img" "$esp_mnt/EFI/omarchy/initramfs.img"
+  rm -f "$esp_mnt/vmlinuz-omarchy-usb-root" \
+    "$esp_mnt/initramfs-omarchy-usb-root.img"
 }
 
 # Piggyback on an OS that already owns BOOTAA64.EFI (custom.cfg only).
 write_piggyback_esp_grub() {
   local esp_mnt=$1 root_uuid=$2
   mkdir -p "$esp_mnt/grub"
+  esp_backup_existing "$esp_mnt" grub/custom.cfg || return 1
+  esp_backup_existing "$esp_mnt" grub/grub.cfg || return 1
+  : >"$esp_mnt/omarchy-mac-root"
   cat >"$esp_mnt/grub/custom.cfg" <<EOF
 menuentry 'Omarchy Mac (new root $root_uuid)' {
-  search --no-floppy --file /initramfs-omarchy-usb-root.img --set=root
-  linux /vmlinuz-omarchy-usb-root root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
-  initrd /initramfs-omarchy-usb-root.img
+  search --no-floppy --file /omarchy-mac-root --set=root
+  linux /EFI/omarchy/vmlinuz root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
+  initrd /EFI/omarchy/initramfs.img
 }
 EOF
   if [[ -f $esp_mnt/grub/grub.cfg ]] && ! grep -q custom.cfg "$esp_mnt/grub/grub.cfg"; then
@@ -44,6 +89,11 @@ write_owned_esp_grub() {
   [[ -f $embed_cfg ]] || return 1
   command -v grub-mkstandalone >/dev/null || return 1
   mkdir -p "$esp_mnt/EFI/BOOT" "$esp_mnt/grub"
+  # BOOTAA64 is usually missing in own-mode; grub.cfg often still has the
+  # previous OS menu — that is the file that locked this machine out.
+  esp_backup_existing "$esp_mnt" EFI/BOOT/BOOTAA64.EFI || return 1
+  esp_backup_existing "$esp_mnt" EFI/BOOT/grub.cfg || return 1
+  esp_backup_existing "$esp_mnt" grub/grub.cfg || return 1
   : >"$esp_mnt/omarchy-mac-root"
   cat >"$esp_mnt/grub/grub.cfg" <<EOF
 echo '========================================'
@@ -55,8 +105,8 @@ set default=0
 search --no-floppy --file /omarchy-mac-root --set=root
 
 menuentry 'Omarchy Mac' {
-  linux /vmlinuz-omarchy-usb-root root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
-  initrd /initramfs-omarchy-usb-root.img
+  linux /EFI/omarchy/vmlinuz root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
+  initrd /EFI/omarchy/initramfs.img
 }
 EOF
   cp "$esp_mnt/grub/grub.cfg" "$esp_mnt/EFI/BOOT/grub.cfg"

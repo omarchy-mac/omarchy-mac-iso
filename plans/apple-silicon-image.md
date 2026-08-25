@@ -131,6 +131,15 @@ Hard constraints, as refusals not comments:
   `/omarchy-mac-root`, same recipe as wipe-USB, no `mkfs.vfat`, no
   `grub-install`, no `update-m1n1`. Hash `m1n1/` / `vendorfw/` / `asahi/`
   before and after; abort on drift. Do not silently replace an existing GRUB.
+- Installer kernels on the System ESP live in `EFI/omarchy/`, not
+  `vmlinuz-*` on the ESP root. `10_linux` globs `/boot/vmlinuz-*` for
+  **any** `grub-mkconfig` that sees this ESP — including the installed
+  OS's pacman `update-grub` hook, not only a live-USB chroot. A leftover
+  `vmlinuz-omarchy-usb-root` becomes the newest default and pairs with
+  `initramfs-omarchy-usb-root.img` (no `encrypt` hook). Copying into
+  `EFI/omarchy/` also `rm`s those legacy names. Do not bak
+  `EFI/omarchy/` (fills a 500MB ESP). Installer ESP backups are only
+  `*.omarchy-bak` for `BOOTAA64.EFI` and grub configs.
 - This machine already is a UEFI-only container plus Omarchy GRUB. Do **not**
   re-run the Asahi installer to "start over". Hide or replace `BOOTAA64.EFI`
   only after an ESP tarball is off-disk. Wiping the Omarchy LUKS root (p5)

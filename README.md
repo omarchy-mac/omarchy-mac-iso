@@ -169,8 +169,16 @@ GUIDs):
   `BOOTAA64.EFI` already exists (`custom.cfg` only, file unchanged);
   **own** if the ESP is UEFI-only (no GRUB) — same `grub-mkstandalone`
   recipe as wipe-USB, marker `/omarchy-mac-root`, never `mkfs` or
-  `update-m1n1`. Unique `vmlinuz-omarchy-usb-root` / initrd names.
-  `m1n1/` / `vendorfw/` / `asahi/` hashes must match after. A fourth
+  `update-m1n1`. Kernel/initrd go in `EFI/omarchy/` so **any**
+  `grub-mkconfig` on that ESP (pacman hook on the installed OS, not
+  only the live USB) misses them. Legacy `vmlinuz-omarchy-usb-root` and
+  `initramfs-omarchy-usb-root.img` on the ESP root are removed. `m1n1/` /
+  `vendorfw/` / `asahi/` hashes must match after. Installer backups of
+  `BOOTAA64.EFI` / `grub.cfg` / `custom.cfg` are `*.omarchy-bak` on the
+  ESP (timestamped if a bak already exists). Kernel copies under
+  `EFI/omarchy/` are not backed up — they are 50MiB and reproducible
+  from the live USB. Other suffixes on this machine (`.iso-bak`,
+  `.hand-*`, `.gen-badroot`) are ad-hoc restore copies, not installer. A fourth
   menu item writes GRUB for an existing `OMARCHYROOT` without `mkpart`.
   **Own-mode metal 2026-08-25:** hid NVMe GRUB, rebuilt live USB, free-space
   `mkpart` p7, wrote `BOOTAA64.EFI`, USB unplugged → `root@omarchy-mac`.
