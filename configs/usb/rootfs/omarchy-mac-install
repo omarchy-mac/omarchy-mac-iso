@@ -19,6 +19,15 @@ elif [[ -f $here/omarchy-mac-disk.sh ]]; then
 else
   fail "omarchy-mac-disk.sh not found"
 fi
+if [[ -f $SHARE/omarchy-mac-esp.sh ]]; then
+  # shellcheck source=/dev/null
+  source "$SHARE/omarchy-mac-esp.sh"
+elif [[ -f $here/omarchy-mac-esp.sh ]]; then
+  # shellcheck source=/dev/null
+  source "$here/omarchy-mac-esp.sh"
+else
+  fail "omarchy-mac-esp.sh not found"
+fi
 
 [[ $EUID == 0 ]] || fail "run as root"
 command -v gum >/dev/null || fail "gum not found"
@@ -352,13 +361,74 @@ EOF
   lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID "$target_dev"
 }
 
+# Copy unique kernels from the live ESP, then piggyback (existing GRUB)
+# or own (UEFI-only: write BOOTAA64.EFI). Never touches m1n1/vendorfw/asahi.
+# Prints "piggyback" or "own" to stdout. Caller holds the root mount.
+apply_system_esp_bootloader() {
+  local esp_part=$1 root_uuid=$2 source_esp=$3
+  local esp_mnt live_esp_mnt
+  local esp_mounted_by_us=0 live_esp_mounted_by_us=0
+  local before_efi after_efi before_prot after_prot
+  local embed_cfg mode
+
+  embed_cfg=$SHARE/grub-embed-system.cfg
+  [[ -f $embed_cfg ]] || embed_cfg=$here/../grub-embed-system.cfg
+  [[ -f $embed_cfg ]] || fail "missing grub-embed-system.cfg — rebuild the live USB"
+
+  esp_mnt=$(findmnt -n -o TARGET "$esp_part" || true)
+  if [[ -z $esp_mnt ]]; then
+    esp_mnt=$(mktemp -d)
+    mount "$esp_part" "$esp_mnt" >/dev/null
+    esp_mounted_by_us=1
+  fi
+  before_prot=$(esp_protected_hashes "$esp_mnt")
+  before_efi=$(sha256sum "$esp_mnt/EFI/BOOT/BOOTAA64.EFI" 2>/dev/null || true)
+
+  live_esp_mnt=$(findmnt -n -o TARGET "$source_esp" || true)
+  if [[ -z $live_esp_mnt ]]; then
+    live_esp_mnt=$(mktemp -d)
+    mount -o ro "$source_esp" "$live_esp_mnt" >/dev/null
+    live_esp_mounted_by_us=1
+  fi
+  esp_copy_unique_kernels "$live_esp_mnt" "$esp_mnt" \
+    || fail "no vmlinuz/initramfs on live ESP $source_esp"
+  if (( live_esp_mounted_by_us == 1 )); then
+    umount "$live_esp_mnt"
+    rmdir "$live_esp_mnt"
+  fi
+
+  if esp_has_bootloader "$esp_mnt"; then
+    write_piggyback_esp_grub "$esp_mnt" "$root_uuid"
+    after_efi=$(sha256sum "$esp_mnt/EFI/BOOT/BOOTAA64.EFI" 2>/dev/null || true)
+    [[ $before_efi == "$after_efi" ]] || fail "BOOTAA64.EFI changed — aborting"
+    mode=piggyback
+  else
+    command -v grub-mkstandalone >/dev/null \
+      || fail "grub-mkstandalone not found — rebuild with --usb --rootfs (grub)"
+    write_owned_esp_grub "$esp_mnt" "$root_uuid" "$embed_cfg" \
+      || fail "could not write System ESP GRUB"
+    [[ -f $esp_mnt/EFI/BOOT/BOOTAA64.EFI ]] || fail "BOOTAA64.EFI missing after own-mode write"
+    [[ -f $esp_mnt/omarchy-mac-root ]] || fail "omarchy-mac-root marker missing"
+    mode=own
+  fi
+
+  after_prot=$(esp_protected_hashes "$esp_mnt")
+  [[ $before_prot == "$after_prot" ]] || fail "asahi/m1n1/vendorfw on the ESP changed — aborting"
+
+  if (( esp_mounted_by_us == 1 )); then
+    umount "$esp_mnt"
+    rmdir "$esp_mnt"
+  fi
+  printf '%s\n' "$mode"
+}
+
 install_into_free_space() {
   local payload_bytes min_bytes name size model tran bytes
   local hole_start hole_size hole_end
   local before_names before_apple backup
-  local root_part root_mnt esp_part esp_mnt
-  local root_uuid esp_uuid live_esp_mnt live_esp_mounted_by_us
-  local payload_mnt before_efi after_efi before_prot after_prot
+  local root_part root_mnt esp_part
+  local root_uuid esp_uuid
+  local payload_mnt esp_mode
   local created_parts=()
 
   command -v parted >/dev/null || fail "parted not found"
@@ -504,78 +574,86 @@ EOF
   rm -f "$root_mnt/omarchy-mac-overlay-write"
   : >"$root_mnt/etc/machine-id"
 
-  esp_mnt=$(findmnt -n -o TARGET "$esp_part" || true)
-  esp_mounted_by_us=0
-  if [[ -z $esp_mnt ]]; then
-    esp_mnt=$(mktemp -d)
-    mount "$esp_part" "$esp_mnt"
-    esp_mounted_by_us=1
-  fi
-  before_efi=$(sha256sum "$esp_mnt/EFI/BOOT/BOOTAA64.EFI" 2>/dev/null || true)
-  before_prot=$( (cd "$esp_mnt" && find asahi m1n1 vendorfw EFI/asahi -type f 2>/dev/null | sort | xargs -r sha256sum) || true )
-
-  live_esp_mnt=$(findmnt -n -o TARGET "$source_esp" || true)
-  live_esp_mounted_by_us=0
-  if [[ -z $live_esp_mnt ]]; then
-    live_esp_mnt=$(mktemp -d)
-    mount -o ro "$source_esp" "$live_esp_mnt"
-    live_esp_mounted_by_us=1
-  fi
-  [[ -f $live_esp_mnt/vmlinuz-linux-asahi ]] || fail "no vmlinuz on live ESP"
-  [[ -f $live_esp_mnt/initramfs-linux-asahi.img ]] || fail "no initramfs-linux-asahi.img on live ESP"
-  # Unique names so a shared System ESP (NVMe /boot) is not overwritten.
-  cp "$live_esp_mnt/vmlinuz-linux-asahi" "$esp_mnt/vmlinuz-omarchy-usb-root"
-  cp "$live_esp_mnt/initramfs-linux-asahi.img" "$esp_mnt/initramfs-omarchy-usb-root.img"
-  if (( live_esp_mounted_by_us == 1 )); then
-    umount "$live_esp_mnt"
-    rmdir "$live_esp_mnt"
-  fi
-
-  mkdir -p "$esp_mnt/grub"
-  cat >"$esp_mnt/grub/custom.cfg" <<EOF
-menuentry 'Omarchy Mac (new root $root_uuid)' {
-  search --no-floppy --file /initramfs-omarchy-usb-root.img --set=root
-  linux /vmlinuz-omarchy-usb-root root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
-  initrd /initramfs-omarchy-usb-root.img
-}
-EOF
-  # Standalone USB GRUB sources this from /grub/grub.cfg.
-  if [[ -f $esp_mnt/grub/grub.cfg ]] && ! grep -q custom.cfg "$esp_mnt/grub/grub.cfg"; then
-    printf '\nif [ -f /grub/custom.cfg ]; then source /grub/custom.cfg; fi\n' \
-      >>"$esp_mnt/grub/grub.cfg"
-  fi
-
-  after_efi=$(sha256sum "$esp_mnt/EFI/BOOT/BOOTAA64.EFI" 2>/dev/null || true)
-  [[ $before_efi == "$after_efi" ]] || fail "BOOTAA64.EFI changed — aborting"
-  after_prot=$( (cd "$esp_mnt" && find asahi m1n1 vendorfw EFI/asahi -type f 2>/dev/null | sort | xargs -r sha256sum) || true )
-  [[ $before_prot == "$after_prot" ]] || fail "asahi/m1n1/vendorfw on the ESP changed — aborting"
+  esp_mode=$(apply_system_esp_bootloader "$esp_part" "$root_uuid" "$source_esp")
 
   esp_uuid=$(blkid -s UUID -o value "$esp_part")
   printf 'UUID=%s /boot vfat defaults,fmask=0133,dmask=0022 0 2\n' "$esp_uuid" >>"$root_mnt/etc/fstab"
 
   sync
   umount "$root_mnt"
-  if (( esp_mounted_by_us == 1 )); then
-    umount "$esp_mnt"
-    rmdir "$esp_mnt"
-  fi
   rmdir "$root_mnt" 2>/dev/null || true
 
   printf '==> done. Did not mklabel %s. New root %s UUID=%s\n' \
     "$target_dev" "$root_part" "$root_uuid"
-  printf '    Boot via existing ESP %s (custom.cfg). GPT dump: %s\n' \
-    "$esp_part" "$backup"
+  if [[ $esp_mode == own ]]; then
+    printf '    System ESP %s: wrote BOOTAA64.EFI (m1n1/vendorfw/asahi unchanged). GPT dump: %s\n' \
+      "$esp_part" "$backup"
+  else
+    printf '    Boot via existing ESP %s (custom.cfg). GPT dump: %s\n' \
+      "$esp_part" "$backup"
+  fi
+  lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID "$target_dev"
+}
+
+# Re-use an OMARCHYROOT already on the disk. Writes GRUB only: no mkpart, no dd.
+install_grub_for_existing_root() {
+  local name model extra
+  local candidates=()
+  local source_esp esp_part root_part root_uuid
+  local esp_mode
+
+  source_esp=$(esp_partition_on "$live_disk" || true)
+  [[ -n $source_esp ]] || fail "no ESP on the live USB $source_dev"
+
+  while read -r name model; do
+    [[ $name == "$live_disk" ]] && continue
+    existing_esp_on "$name" >/dev/null || continue
+    existing_omarchy_root_on "$name" >/dev/null || continue
+    extra=""
+    disk_has_apple_partitions "$name" && extra=" (keeps APFS)"
+    disk_is_nvme "$name" && extra="${extra} nvme"
+    candidates+=("$name  OMARCHYROOT on ${model:-disk}${extra}")
+  done < <(lsblk -dn -o NAME,MODEL)
+
+  (( ${#candidates[@]} > 0 )) || fail "no disk has both an ESP and an OMARCHYROOT (install into free space first)"
+
+  choice=$(printf '%s\n' "${candidates[@]}" | gum choose --header "Write GRUB for which existing OMARCHYROOT?")
+  [[ -n $choice ]] || fail "cancelled"
+  target_name=${choice%% *}
+  target_dev=/dev/$target_name
+  esp_part=$(existing_esp_on "$target_name") || fail "$target_dev has no ESP"
+  root_part=$(existing_omarchy_root_on "$target_name") || fail "$target_dev has no OMARCHYROOT"
+  root_uuid=$(blkid -s UUID -o value "$root_part")
+  [[ -n $root_uuid ]] || fail "no UUID on $root_part"
+
+  printf '==> confirm (arrow keys, then enter)\n'
+  gum confirm \
+    "Write GRUB on $esp_part for $root_part (UUID=$root_uuid). No new partition, no mklabel, no LUKS. If the ESP has no BOOTAA64.EFI this will create one. m1n1/vendorfw/asahi stay." \
+    || fail "cancelled"
+
+  if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
+    printf 'dry-run: apply_system_esp_bootloader %s root=%s (own if no BOOTAA64.EFI, else piggyback)\n' \
+      "$esp_part" "$root_uuid"
+    printf 'dry-run: would NOT mklabel, mkpart, or dd\n'
+    return 0
+  fi
+
+  esp_mode=$(apply_system_esp_bootloader "$esp_part" "$root_uuid" "$source_esp")
+  printf '==> done. GRUB mode=%s ESP=%s root=%s UUID=%s\n' \
+    "$esp_mode" "$esp_part" "$root_part" "$root_uuid"
   lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID "$target_dev"
 }
 
 action=$(gum choose --header "Omarchy Mac live USB" \
   "Install into free space (keeps existing partitions)" \
+  "Install GRUB for an existing OMARCHYROOT (no new partition)" \
   "Install to a blank USB (wipes the whole disk)" \
   "Clone this live USB onto another stick")
 [[ -n $action ]] || fail "cancelled"
 
 case $action in
   "Install into free space"*) install_into_free_space ;;
+  "Install GRUB for an existing"*) install_grub_for_existing_root ;;
   "Install to a blank USB"*) install_persistent_root ;;
   Clone*) clone_live_usb ;;
   *) fail "unknown action" ;;

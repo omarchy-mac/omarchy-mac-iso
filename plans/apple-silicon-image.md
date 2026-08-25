@@ -115,7 +115,7 @@ pick target free space → parted (read back the slot, never guess) →
 optional fresh luksFormat → dd root.img → btrfs resize max →
 btrfstune -u → personalize (fstab, crypttab, hostname, user, keymap, locale) →
 mkinitcpio -P (asahi hook **and** dwc3-apple) → GRUB into the existing ESP
-(EFI/BOOT and grub/ only) → @factory snapshot → reboot
+(EFI/BOOT and grub/ only; see System ESP modes below) → @factory snapshot → reboot
 ```
 
 Hard constraints, as refusals not comments:
@@ -123,8 +123,23 @@ Hard constraints, as refusals not comments:
 - Never resize or touch APFS (`7C3457EF-…`), iBoot (`69646961-…`), or Recovery
   (`52637672-…`).
 - Live installer never writes `m1n1/boot.bin`, `vendorfw/`, or `asahi/` on the
-  internal ESP. Writing `EFI/BOOT/BOOTAA64.EFI` and `grub/` is required so the
-  installed system boots. `asahi/` holds wifi/bt pairing; leave it.
+  internal ESP. `asahi/` holds wifi/bt pairing; leave it.
+- **System ESP GRUB, two modes.** U-Boot always loads `\EFI\BOOT\BOOTAA64.EFI`
+  (no EFI boot order). **Piggyback** if that file already exists: unique
+  kernels + `grub/custom.cfg`, abort if `BOOTAA64.EFI` bytes change.
+  **Own** if it is missing (UEFI-only): `grub-mkstandalone` + marker
+  `/omarchy-mac-root`, same recipe as wipe-USB, no `mkfs.vfat`, no
+  `grub-install`, no `update-m1n1`. Hash `m1n1/` / `vendorfw/` / `asahi/`
+  before and after; abort on drift. Do not silently replace an existing GRUB.
+- This machine already is a UEFI-only container plus Omarchy GRUB. Do **not**
+  re-run the Asahi installer to "start over". Hide or replace `BOOTAA64.EFI`
+  only after an ESP tarball is off-disk. Wiping the Omarchy LUKS root (p5)
+  does not test this — m1n1 lives on p4. p5 and p7 are not adjacent.
+- macOS `diskutil mount "EFI - OMARC"` can refuse a healthy FAT ESP
+  (`failed to mount`). Use `mount -t msdos /dev/disk0s4 /Volumes/esp`
+  (confirm the slice with `diskutil list`; ~500MB FAT). Rename
+  `EFI/BOOT/BOOTAA64.EFI.omarchy-bak` → `BOOTAA64.EFI`. Do not copy the
+  live USB's `EFI/BOOT/BOOTAA64.EFI` onto the System ESP.
 - Never create a second ESP on the USB-after-UEFI-only path. The os-package
   path creates the one System ESP via asahi-installer; that is a different
   front door.
@@ -381,8 +396,18 @@ GitHub Releases vs R2 vs split assets.
    `omarchy snapshot restore` sees `@factory`.
 4. Internal ESP `m1n1/boot.bin`, `vendorfw/`, `asahi/` byte-identical before
    and after.
-5. UEFI-only provision on a machine with free space, end to end, timed against
-   the current 8.5 + 14 minute path.
+5. System ESP GRUB own-mode, metal ladder. **Rung 1 done 2026-08-24:**
+   ESP tarball on LINUXBAK; hid NVMe `BOOTAA64.EFI`; USB GRUB appeared
+   after `usb reset` (not a no-key autoboot). macOS restore: `diskutil
+   mount "EFI - OMARC"` failed; `mount -t msdos /dev/disk0s4 /Volumes/esp`
+   then rename `.omarchy-bak` back. **Rung 2 done 2026-08-25:** rebuilt
+   live USB (`--usb --rootfs`, SHARE mkdir), hid NVMe GRUB, free-space
+   install `mkpart` p7 (UUID `2bd9f673-…`), wrote System ESP
+   `BOOTAA64.EFI` (`m1n1`/`vendorfw`/`asahi` unchanged), USB unplugged →
+   `root@omarchy-mac`. Own-mode replaces pancake GRUB (one `BOOTAA64.EFI`).
+   Restoring the original file plus `grub-mkconfig` (`quiet splash`) is
+   how this desktop and branded Plymouth come back. Do not re-run Asahi's
+   installer. U-Boot is Asahi (`m1n1/boot.bin`), not stock Mac firmware.
 6. CI green on `workflow_dispatch` before nightly.
 
 ## Coordination

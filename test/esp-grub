@@ -1,0 +1,79 @@
+#!/bin/bash
+# Unprivileged System ESP GRUB tests. Uses temp directories, not NVMe.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../configs/usb/rootfs/omarchy-mac-esp.sh
+source "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
+
+embed="${repo_root}/configs/usb/grub-embed-system.cfg"
+failures=0
+check() {
+  local desc=$1
+  shift
+  if bash -c "$*"; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n' "$desc"
+    failures=$((failures + 1))
+  fi
+}
+
+work=$(mktemp -d)
+cleanup() { rm -rf "$work"; }
+trap cleanup EXIT
+
+fake_live=$work/live-esp
+mkdir -p "$fake_live"
+printf 'vmlinuz\n' >"$fake_live/vmlinuz-linux-asahi"
+printf 'initrd\n' >"$fake_live/initramfs-linux-asahi.img"
+
+# --- own mode: UEFI-only ESP (m1n1 + vendorfw, no GRUB) ---
+own=$work/own-esp
+mkdir -p "$own/m1n1" "$own/vendorfw" "$own/asahi"
+printf 'stage2\n' >"$own/m1n1/boot.bin"
+printf 'fw\n' >"$own/vendorfw/firmware.cpio"
+printf 'pair\n' >"$own/asahi/stub_info.json"
+before=$(esp_protected_hashes "$own")
+
+esp_copy_unique_kernels "$fake_live" "$own"
+write_owned_esp_grub "$own" "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" "$embed"
+
+after=$(esp_protected_hashes "$own")
+check "own mode writes BOOTAA64.EFI" "[[ -f '$own/EFI/BOOT/BOOTAA64.EFI' ]]"
+check "own mode writes omarchy-mac-root marker" "[[ -f '$own/omarchy-mac-root' ]]"
+check "own mode grub.cfg names the root UUID" "grep -q 'root=UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' '$own/grub/grub.cfg'"
+check "own mode copies unique vmlinuz" "[[ -f '$own/vmlinuz-omarchy-usb-root' ]]"
+check "own mode copies unique initrd" "[[ -f '$own/initramfs-omarchy-usb-root.img' ]]"
+check "own mode leaves m1n1/vendorfw/asahi hashes unchanged" "[[ '$before' == '$after' ]]"
+check "own mode does not format away m1n1/boot.bin" "[[ -f '$own/m1n1/boot.bin' ]]"
+check "embed searches /omarchy-mac-root" "grep -q 'search --no-floppy --file /omarchy-mac-root' '$embed'"
+check "embed does not search live USB marker" "! grep -q 'search.*omarchy-usb-live' '$embed'"
+
+# --- piggyback: existing GRUB must not be replaced ---
+pig=$work/pig-esp
+mkdir -p "$pig/EFI/BOOT" "$pig/grub" "$pig/m1n1"
+printf 'EXISTING-GRUB\n' >"$pig/EFI/BOOT/BOOTAA64.EFI"
+printf 'menuentry existing {}\n' >"$pig/grub/grub.cfg"
+printf 'stage2\n' >"$pig/m1n1/boot.bin"
+printf 'EXISTING-GRUB\n' >"$work/boot.aa64.expected"
+before_pig=$(esp_protected_hashes "$pig")
+esp_copy_unique_kernels "$fake_live" "$pig"
+write_piggyback_esp_grub "$pig" "11111111-2222-3333-4444-555555555555"
+after_pig=$(esp_protected_hashes "$pig")
+check "piggyback leaves BOOTAA64.EFI bytes unchanged" \
+  "cmp -s '$pig/EFI/BOOT/BOOTAA64.EFI' '$work/boot.aa64.expected'"
+check "piggyback writes custom.cfg" "[[ -f '$pig/grub/custom.cfg' ]]"
+check "piggyback custom.cfg names the new UUID" \
+  "grep -q 'root=UUID=11111111-2222-3333-4444-555555555555' '$pig/grub/custom.cfg'"
+check "piggyback sources custom.cfg from grub.cfg" "grep -q custom.cfg '$pig/grub/grub.cfg'"
+check "piggyback leaves m1n1 hash unchanged" "[[ '$before_pig' == '$after_pig' ]]"
+check "esp_has_bootloader is true for piggyback ESP" "[[ -f '$pig/EFI/BOOT/BOOTAA64.EFI' ]]"
+check "esp_has_bootloader is false on an empty ESP dir" \
+  "[[ ! -f '$work/empty-esp/EFI/BOOT/BOOTAA64.EFI' ]]"
+
+if (( failures > 0 )); then
+  echo "${failures} esp-grub test failure(s)"
+  exit 1
+fi
+echo "esp-grub tests passed"

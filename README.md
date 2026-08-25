@@ -122,6 +122,23 @@ is not defined. Live GRUB prints `OMARCHY USB GRUB`; installed GRUB prints
 `OMARCHY USB INSTALL` / menu `Omarchy Mac (USB root)`. Omarchy Linux /
 Advanced options means you are on NVMe.
 
+Hiding NVMe `EFI/BOOT/BOOTAA64.EFI` (rename to `.omarchy-bak`; m1n1 stays)
+makes U-Boot take USB GRUB — proven 2026-08-24 after `usb reset` (Type-C
+still needs that). Restore from macOS if Linux will not boot: Apple picker
+(hold power) → macOS. `diskutil mount "EFI - OMARC"` can fail even when
+the volume is fine; then:
+
+```
+sudo mkdir -p /Volumes/esp
+sudo mount -t msdos /dev/disk0s4 /Volumes/esp
+mv /Volumes/esp/EFI/BOOT/BOOTAA64.EFI.omarchy-bak \
+   /Volumes/esp/EFI/BOOT/BOOTAA64.EFI
+sudo umount /Volumes/esp
+```
+
+Copy the pancake `BOOTAA64.EFI`, not the Lexar's `EFI/BOOT/` file (that is
+USB GRUB). A spare copy lives on the live ESP as `omarchy-restore/`.
+
 Wi-Fi: nmtui Rescan until SSIDs appear (a few rescans is normal), then
 Activate. On the persistent USB root (2026-08-24) that was enough for
 `ping www.google.com`; nmcli is optional.
@@ -148,6 +165,15 @@ GUIDs):
   `root@omarchy-mac`, existing Omarchy still the default GRUB entry.
   Parted whole-MiB starts can sit inside APFS on 4K NVMe — mkpart insets
   1MiB. Apple GPT snapshots use `lsblk -l` so tree glyphs do not abort
-  after the new partition appears. Writes `grub/custom.cfg` on the
-  existing ESP; unique `vmlinuz-omarchy-usb-root` / initrd names; does not
-  replace `BOOTAA64.EFI`.
+  after the new partition appears. Two System ESP modes: **piggyback** if
+  `BOOTAA64.EFI` already exists (`custom.cfg` only, file unchanged);
+  **own** if the ESP is UEFI-only (no GRUB) — same `grub-mkstandalone`
+  recipe as wipe-USB, marker `/omarchy-mac-root`, never `mkfs` or
+  `update-m1n1`. Unique `vmlinuz-omarchy-usb-root` / initrd names.
+  `m1n1/` / `vendorfw/` / `asahi/` hashes must match after. A fourth
+  menu item writes GRUB for an existing `OMARCHYROOT` without `mkpart`.
+  **Own-mode metal 2026-08-25:** hid NVMe GRUB, rebuilt live USB, free-space
+  `mkpart` p7, wrote `BOOTAA64.EFI`, USB unplugged → `root@omarchy-mac`.
+  U-Boot only loads one `BOOTAA64.EFI`; own-mode replaces an existing
+  Omarchy GRUB. Restore pancake with the original file (not the live USB's)
+  then `grub-mkconfig` so `quiet splash` brings the branded Plymouth unlock.
