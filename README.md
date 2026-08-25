@@ -122,6 +122,23 @@ is not defined. Live GRUB prints `OMARCHY USB GRUB`; installed GRUB prints
 `OMARCHY USB INSTALL` / menu `Omarchy Mac (USB root)`. Omarchy Linux /
 Advanced options means you are on NVMe.
 
+Hiding NVMe `EFI/BOOT/BOOTAA64.EFI` (rename to `.omarchy-bak`; m1n1 stays)
+makes U-Boot take USB GRUB — proven 2026-08-24 after `usb reset` (Type-C
+still needs that). Restore from macOS if Linux will not boot: Apple picker
+(hold power) → macOS. `diskutil mount "EFI - OMARC"` can fail even when
+the volume is fine; then:
+
+```
+sudo mkdir -p /Volumes/esp
+sudo mount -t msdos /dev/disk0s4 /Volumes/esp
+mv /Volumes/esp/EFI/BOOT/BOOTAA64.EFI.omarchy-bak \
+   /Volumes/esp/EFI/BOOT/BOOTAA64.EFI
+sudo umount /Volumes/esp
+```
+
+Copy the pancake `BOOTAA64.EFI`, not the Lexar's `EFI/BOOT/` file (that is
+USB GRUB). A spare copy lives on the live ESP as `omarchy-restore/`.
+
 Wi-Fi: nmtui Rescan until SSIDs appear (a few rescans is normal), then
 Activate. On the persistent USB root (2026-08-24) that was enough for
 `ping www.google.com`; nmcli is optional.
