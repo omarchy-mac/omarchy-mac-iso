@@ -113,6 +113,9 @@ check "System ESP kernels live under EFI/omarchy" grep -q 'EFI/omarchy/vmlinuz' 
   "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
 check "ESP writes backup existing boot files" grep -q omarchy-bak \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
+check "legacy ESP-root installer kernels are removed" grep -q \
+  'rm -f "$esp_mnt/vmlinuz-omarchy-usb-root"' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
 check "free-space install refuses to change BOOTAA64.EFI" grep -q 'BOOTAA64.EFI changed' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "sh -n omarchy-mac-esp.sh" bash -n \

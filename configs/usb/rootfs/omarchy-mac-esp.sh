@@ -17,12 +17,11 @@ esp_protected_hashes() {
 # it and write a timestamped copy. No-op if the source is missing.
 esp_backup_existing() {
   local esp_mnt=$1 rel=$2
-  local src=$esp_mnt/$rel dest
+  local src=$esp_mnt/$rel dest n=0
   [[ -f $src ]] || return 0
   dest=$src.omarchy-bak
   if [[ -e $dest ]]; then
     dest=$src.omarchy-bak.$(date +%Y%m%d%H%M%S)
-    n=0
     while [[ -e $dest ]]; do
       n=$((n + 1))
       dest=$src.omarchy-bak.$(date +%Y%m%d%H%M%S).$n
@@ -32,17 +31,35 @@ esp_backup_existing() {
   printf '==> ESP backup %s -> %s\n' "$rel" "${dest#"$esp_mnt"/}" >&2
 }
 
+# 64MiB: one kernel + initrd plus slack. A full ESP mid-write is unbootable.
+ESP_MIN_FREE_BYTES=$((64 * 1024 * 1024))
+
+esp_require_free_bytes() {
+  local esp_mnt=$1 need=${2:-$ESP_MIN_FREE_BYTES}
+  local avail_kb
+  avail_kb=$(df -Pk "$esp_mnt" | awk 'NR==2 { print $4 }')
+  [[ $avail_kb =~ ^[0-9]+$ ]] || return 1
+  (( avail_kb * 1024 >= need )) || {
+    printf 'error: ESP %s has %sKiB free, need %s bytes\n' \
+      "$esp_mnt" "$avail_kb" "$need" >&2
+    return 1
+  }
+}
+
 # Under EFI/omarchy/ so grub-mkconfig 10_linux (/boot/vmlinuz-*) does
 # not treat the installer kernel as the default Omarchy entry.
+# Drop the legacy ESP-root names from earlier installs; do not bak
+# EFI/omarchy/ — those files are ours and ~50MiB each copy.
 esp_copy_unique_kernels() {
   local live_esp_mnt=$1 esp_mnt=$2
   [[ -f $live_esp_mnt/vmlinuz-linux-asahi ]] || return 1
   [[ -f $live_esp_mnt/initramfs-linux-asahi.img ]] || return 1
+  esp_require_free_bytes "$esp_mnt" || return 1
   mkdir -p "$esp_mnt/EFI/omarchy"
-  esp_backup_existing "$esp_mnt" EFI/omarchy/vmlinuz || return 1
-  esp_backup_existing "$esp_mnt" EFI/omarchy/initramfs.img || return 1
   cp "$live_esp_mnt/vmlinuz-linux-asahi" "$esp_mnt/EFI/omarchy/vmlinuz"
   cp "$live_esp_mnt/initramfs-linux-asahi.img" "$esp_mnt/EFI/omarchy/initramfs.img"
+  rm -f "$esp_mnt/vmlinuz-omarchy-usb-root" \
+    "$esp_mnt/initramfs-omarchy-usb-root.img"
 }
 
 # Piggyback on an OS that already owns BOOTAA64.EFI (custom.cfg only).

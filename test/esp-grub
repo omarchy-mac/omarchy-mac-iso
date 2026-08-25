@@ -36,6 +36,9 @@ printf 'fw\n' >"$own/vendorfw/firmware.cpio"
 printf 'pair\n' >"$own/asahi/stub_info.json"
 printf 'pancake-menu\n' >"$own/grub/grub.cfg"
 printf 'efi-grub\n' >"$own/EFI/BOOT/grub.cfg"
+# Pre-PR #13 names: 10_linux still globs these if we only add EFI/omarchy/.
+printf 'legacy-vmlinuz\n' >"$own/vmlinuz-omarchy-usb-root"
+printf 'legacy-initrd\n' >"$own/initramfs-omarchy-usb-root.img"
 before=$(esp_protected_hashes "$own")
 
 esp_copy_unique_kernels "$fake_live" "$own"
@@ -53,8 +56,12 @@ check "own mode does not bak a missing BOOTAA64.EFI" \
   "[[ ! -e '$own/EFI/BOOT/BOOTAA64.EFI.omarchy-bak' ]]"
 check "own mode copies vmlinuz under EFI/omarchy" "[[ -f '$own/EFI/omarchy/vmlinuz' ]]"
 check "own mode copies initrd under EFI/omarchy" "[[ -f '$own/EFI/omarchy/initramfs.img' ]]"
-check "own mode does not drop vmlinuz-* on the ESP root" \
-  "! compgen -G '$own/vmlinuz-*' >/dev/null"
+check "own mode removes legacy vmlinuz-omarchy-usb-root" \
+  "[[ ! -e '$own/vmlinuz-omarchy-usb-root' ]]"
+check "own mode removes legacy initramfs-omarchy-usb-root.img" \
+  "[[ ! -e '$own/initramfs-omarchy-usb-root.img' ]]"
+check "own mode does not bak installer kernels under EFI/omarchy" \
+  "[[ ! -e '$own/EFI/omarchy/vmlinuz.omarchy-bak' ]]"
 check "own mode leaves m1n1/vendorfw/asahi hashes unchanged" "[[ '$before' == '$after' ]]"
 check "own mode does not format away m1n1/boot.bin" "[[ -f '$own/m1n1/boot.bin' ]]"
 check "embed searches /omarchy-mac-root" "grep -q 'search --no-floppy --file /omarchy-mac-root' '$embed'"
