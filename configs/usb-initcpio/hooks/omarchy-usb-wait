@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: MIT
 #
 # Root is on USB. dwc3-apple can take several seconds. Wait for the
-# UUID (or OMARCHYROOT) before the filesystems hook mounts it.
+# cmdline UUID before the filesystems hook mounts it. Do not treat
+# LABEL=OMARCHYROOT as success when a UUID is set: NVMe hole installs
+# use that label too, so the wait would return before USB enumerates.
 
 hang() {
   echo "==> $*" >/dev/console
@@ -35,12 +37,12 @@ run_hook() {
 
   uuid=$(root_uuid_from_cmdline || true)
   i=0
-  while [ "$i" -lt 30 ]; do
+  while [ "$i" -lt 45 ]; do
     if [ -n "$uuid" ] && [ -e /dev/disk/by-uuid/"$uuid" ]; then
       echo "==> omarchy-usb-wait: root UUID=$uuid" >/dev/console
       return 0
     fi
-    if [ -e /dev/disk/by-label/OMARCHYROOT ]; then
+    if [ -z "$uuid" ] && [ -e /dev/disk/by-label/OMARCHYROOT ]; then
       echo "==> omarchy-usb-wait: root label=OMARCHYROOT" >/dev/console
       return 0
     fi

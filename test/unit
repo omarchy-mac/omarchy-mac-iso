@@ -135,6 +135,9 @@ check "install GRUB searches omarchy-usb-install" grep -q /omarchy-usb-install \
   "${repo_root}/configs/usb/grub-embed-install.cfg"
 check "install initramfs waits for USB root" grep -q OMARCHYROOT \
   "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-wait"
+check "usb-wait does not succeed on OMARCHYROOT when UUID is set" grep -q \
+  'if \[ -z "$uuid" \] && \[ -e /dev/disk/by-label/OMARCHYROOT \]' \
+  "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-wait"
 check "install initramfs lists dwc3_apple" grep -q dwc3_apple \
   "${repo_root}/configs/usb-initcpio/mkinitcpio-install.conf"
 check "sh -n omarchy-usb-wait" sh -n \
