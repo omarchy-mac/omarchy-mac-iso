@@ -163,7 +163,8 @@ GUIDs):
   `gum 2.0.0`, `fnmode=1`.
 - **Install (wipe USB)** — GPT ESP (`OMARCHYBOOT`) + btrfs root filling the
   disk. Prompts for a desktop user, enables SDDM autologin
-  (`omarchy.desktop` / Hyprland uwsm) and `graphical.target`. Live USB
+  (`omarchy.desktop` in `/usr/local/share/wayland-sessions`, Hyprland
+  uwsm) and `graphical.target`. Live USB
   stays tty autologin. Proven on an M2 Max (2026-08-24): 14.5G stick,
   then console-only; graphical session not metal-proven yet. GRUB must
   search `/omarchy-usb-install`, not `/initramfs-linux-asahi.img`
