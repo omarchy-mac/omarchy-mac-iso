@@ -103,6 +103,11 @@ check "session file is looked up in usr/local/share" grep -q \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "graphical payload is required before wipefs" \
   bash -c 'awk "/^install_persistent_root\\(\\)/,/wipefs/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q require_graphical_payload'
+check "desktop user is asked before the payload copy" \
+  bash -c 'awk "/^install_persistent_root\\(\\)/,/copying payload/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q ask_desktop_user'
+check "install initrd can come from a wipe-installed USB ESP" grep -q \
+  'initramfs-omarchy-usb-root.img ]]; then' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "installed root uses graphical.target" grep -q 'set-default graphical.target' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "installed root creates a desktop user on @home" grep -q 'subvol=@home' \

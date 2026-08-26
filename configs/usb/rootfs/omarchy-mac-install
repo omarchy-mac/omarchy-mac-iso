@@ -243,30 +243,39 @@ require_graphical_payload() {
     || fail "no Hyprland/omarchy wayland session in this payload — rebuild with --usb --rootfs"
 }
 
+# Ask before dd. A gum prompt after 30 minutes of copy dies if the lid
+# closes or the TTY goes away (Input/output error).
+ask_desktop_user() {
+  local pass2 reserved='^(root|bin|daemon|nobody|dbus|alpm|git|avahi|polkitd|sddm|uuidd)$'
+  if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
+    desktop_user=dryrun
+    desktop_pass=dryrun
+    return 0
+  fi
+  desktop_user=$(gum input --placeholder "username" --header "Desktop user (not root). Asked now so you can walk away during the copy.")
+  [[ -n $desktop_user ]] || fail "cancelled"
+  [[ $desktop_user =~ ^[a-z_][a-z0-9_-]*$ ]] || fail "invalid username"
+  [[ $desktop_user =~ $reserved ]] && fail "username $desktop_user is reserved"
+  desktop_pass=$(gum input --password --placeholder "password" --header "Password for $desktop_user")
+  [[ -n $desktop_pass ]] || fail "cancelled"
+  pass2=$(gum input --password --placeholder "password" --header "Confirm password")
+  [[ $desktop_pass == "$pass2" ]] || fail "passwords do not match"
+}
+
 # Live USB stays tty autologin. Installed roots get a user, SDDM, and
 # graphical.target. Mount @home before useradd so /home isn't on @.
 personalize_graphical_session() {
   local root_mnt=$1 root_part=$2
-  local user pass pass2 home_mounted=0 session
-  local reserved='^(root|bin|daemon|nobody|dbus|alpm|git|avahi|polkitd|sddm|uuidd)$'
+  local user=$desktop_user pass=$desktop_pass home_mounted=0 session
 
   require_graphical_payload "$root_mnt"
   session=$(basename "$(wayland_session_path "$root_mnt")")
+  [[ -n $user && -n $pass ]] || fail "desktop user was not collected before copy"
 
   if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
-    printf 'dry-run: useradd + enable sddm + graphical.target\n'
+    printf 'dry-run: useradd %s + enable sddm + graphical.target\n' "$user"
     return 0
   fi
-
-  user=$(gum input --placeholder "username" --header "Desktop user (not root)")
-  [[ -n $user ]] || fail "cancelled"
-  [[ $user =~ ^[a-z_][a-z0-9_-]*$ ]] || fail "invalid username"
-  [[ $user =~ $reserved ]] && fail "username $user is reserved"
-
-  pass=$(gum input --password --placeholder "password" --header "Password for $user")
-  [[ -n $pass ]] || fail "cancelled"
-  pass2=$(gum input --password --placeholder "password" --header "Confirm password")
-  [[ $pass == "$pass2" ]] || fail "passwords do not match"
 
   mkdir -p "$root_mnt/home"
   if ! findmnt "$root_mnt/home" >/dev/null; then
@@ -316,6 +325,7 @@ install_persistent_root() {
   command -v grub-mkstandalone >/dev/null || fail "grub-mkstandalone not found — rebuild with --usb --rootfs (grub)"
   [[ -f $SHARE/grub-embed-install.cfg ]] || fail "missing $SHARE/grub-embed-install.cfg — rebuild the live USB"
   require_graphical_payload
+  ask_desktop_user
 
   payload_bytes=$(lsblk -dn -b -o SIZE "$live_partition")
   min_bytes=$(( ESP_MIB * 1024 * 1024 + payload_bytes + 64 * 1024 * 1024 ))
@@ -397,10 +407,16 @@ EOF
     live_esp_mounted_by_us=1
   fi
   [[ -f $live_esp_mnt/vmlinuz-linux-asahi ]] || fail "no vmlinuz-linux-asahi on the live ESP"
-  [[ -f $live_esp_mnt/initramfs-linux-asahi.img ]] || fail "no initramfs-linux-asahi.img on the live ESP"
   cp "$live_esp_mnt/vmlinuz-linux-asahi" "$esp_mnt/vmlinuz-linux-asahi"
-  # Unique name: NVMe ESP also has initramfs-linux-asahi.img (LUKS).
-  cp "$live_esp_mnt/initramfs-linux-asahi.img" "$esp_mnt/initramfs-omarchy-usb-root.img"
+  # Live ISO ESP has initramfs-linux-asahi.img; a wipe-installed USB has
+  # only initramfs-omarchy-usb-root.img. Unique dest name vs NVMe LUKS.
+  if [[ -f $live_esp_mnt/initramfs-linux-asahi.img ]]; then
+    cp "$live_esp_mnt/initramfs-linux-asahi.img" "$esp_mnt/initramfs-omarchy-usb-root.img"
+  elif [[ -f $live_esp_mnt/initramfs-omarchy-usb-root.img ]]; then
+    cp "$live_esp_mnt/initramfs-omarchy-usb-root.img" "$esp_mnt/initramfs-omarchy-usb-root.img"
+  else
+    fail "no install initramfs on $source_esp (need initramfs-linux-asahi.img or initramfs-omarchy-usb-root.img)"
+  fi
   if (( live_esp_mounted_by_us == 1 )); then
     umount "$live_esp_mnt"
     rmdir "$live_esp_mnt"
@@ -520,6 +536,7 @@ install_into_free_space() {
 
   command -v parted >/dev/null || fail "parted not found"
   require_graphical_payload
+  ask_desktop_user
 
   payload_bytes=$(lsblk -dn -b -o SIZE "$live_partition")
   min_bytes=$(( payload_bytes + 64 * 1024 * 1024 ))
