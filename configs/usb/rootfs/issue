@@ -1,5 +1,4 @@
 Omarchy Mac live USB. tty1 autologin starts the install prompt.
-Wi-Fi: nmtui Rescan until SSIDs appear, then Activate
-Install: omarchy-mac-install   (never touches APFS; you pick the disk)
+Install: omarchy-mac-install   (never touches APFS; you pick the partition)
 
 

@@ -5,7 +5,7 @@ After=local-fs.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/bash -c 'echo 1 >/sys/module/hid_apple/parameters/fnmode 2>/dev/null; echo 1 >/sys/module/appledrm/parameters/show_notch 2>/dev/null; true'
+ExecStart=/usr/bin/bash -c 'dmesg -n 1 >/dev/null 2>&1; echo 1 >/sys/module/hid_apple/parameters/fnmode 2>/dev/null; echo 1 >/sys/module/appledrm/parameters/show_notch 2>/dev/null; true'
 
 [Install]
 WantedBy=multi-user.target

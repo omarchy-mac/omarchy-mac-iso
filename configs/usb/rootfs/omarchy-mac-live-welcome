@@ -11,14 +11,19 @@ command -v gum >/dev/null || exit 0
 # tty1 is also the kmsg console. printk overwrites gum.
 dmesg -n 1 2>/dev/null || true
 
-clear
+omarchy_path=${OMARCHY_PATH:-/usr/share/omarchy}
+if [[ -f $omarchy_path/logo.txt ]]; then
+  clear
+  printf '\033[32m'
+  cat "$omarchy_path/logo.txt"
+  printf '\033[0m\n'
+else
+  clear
+fi
+
 cat <<'EOF'
-
-  Omarchy Mac live USB
-
   This stick is the installer, not an installed desktop.
-  Wi-Fi:  nmtui  →  Rescan until SSIDs appear  →  Activate
-  Install never touches APFS; you pick the disk next.
+  Install never touches APFS. You pick which partition next.
 
   Arrow keys, then enter.
 
@@ -34,4 +39,4 @@ case $choice in
     ;;
 esac
 
-printf '\nWi-Fi:   nmtui\nInstall: omarchy-mac-install\n\n'
+printf '\nInstall: omarchy-mac-install\n\n'

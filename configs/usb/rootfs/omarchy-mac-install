@@ -6,6 +6,33 @@ set -euo pipefail
 
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+# Wall time of the copy/personalize, not the gum questions.
+install_start=0
+mark_install_start() { install_start=$EPOCHSECONDS; }
+
+format_duration() {
+  local total=$1 minutes seconds
+  minutes=$(( total / 60 ))
+  seconds=$(( total % 60 ))
+  if (( minutes > 0 )); then
+    printf '%dm %02ds' "$minutes" "$seconds"
+  else
+    printf '%ds' "$seconds"
+  fi
+}
+
+offer_reboot_after_install() {
+  local elapsed
+  (( install_start > 0 )) || return 0
+  elapsed=$(( EPOCHSECONDS - install_start ))
+  printf '==> finished in %s\n' "$(format_duration "$elapsed")"
+  [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]] && return 0
+  if gum confirm --affirmative "Yes, reboot" --negative "Stay here" "Reboot this machine?"; then
+    printf '==> rebooting\n'
+    systemctl reboot
+  fi
+}
+
 GPT_BACKUP_BYTES=$((34 * 512))
 ESP_MIB=512
 SHARE=/usr/local/share/omarchy-mac-iso
@@ -183,6 +210,7 @@ clone_live_usb() {
     "This will DESTROY every partition on $target_dev (${choice#*  }). $copy_bytes bytes from $source_dev are copied onto it. Continue?" \
     || fail "cancelled"
 
+  mark_install_start
   unmount_disk "$target_dev"
   if (( running_from_this_live_usb == 1 )); then
     unmount_disk "$source_dev" 1
@@ -252,13 +280,13 @@ ask_desktop_user() {
     desktop_pass=dryrun
     return 0
   fi
-  desktop_user=$(gum input --placeholder "username" --header "Desktop user (not root). Asked now so you can walk away during the copy.")
+  desktop_user=$(gum input --placeholder "Alphanumeric without spaces (like dhh)" --header "Username for the installed desktop")
   [[ -n $desktop_user ]] || fail "cancelled"
   [[ $desktop_user =~ ^[a-z_][a-z0-9_-]*$ ]] || fail "invalid username"
   [[ $desktop_user =~ $reserved ]] && fail "username $desktop_user is reserved"
-  desktop_pass=$(gum input --password --placeholder "password" --header "Password for $desktop_user")
+  desktop_pass=$(gum input --password --placeholder "Used for the desktop user" --header "Password")
   [[ -n $desktop_pass ]] || fail "cancelled"
-  pass2=$(gum input --password --placeholder "password" --header "Confirm password")
+  pass2=$(gum input --password --placeholder "Must match the password you just typed" --header "Confirm password")
   [[ $desktop_pass == "$pass2" ]] || fail "passwords do not match"
 }
 
@@ -382,6 +410,7 @@ install_persistent_root() {
     || fail "cancelled"
   printf '==> confirmed\n'
 
+  mark_install_start
   source_esp=$(esp_partition_on "$live_disk" || true)
   [[ -n $source_esp ]] || fail "no ESP on the live USB $source_dev"
 
@@ -435,7 +464,6 @@ install_persistent_root() {
   printf 'omarchy-mac\n' >"$root_mnt/etc/hostname"
   cat >"$root_mnt/etc/issue" <<'EOF'
 Omarchy Mac (installed). SDDM autologin.
-Wi-Fi: nmtui Rescan, then Activate if the session has no network.
 EOF
   rm -f "$root_mnt/omarchy-mac-overlay-write"
   : >"$root_mnt/etc/machine-id"
@@ -636,6 +664,7 @@ install_into_free_space() {
     return 0
   fi
 
+  mark_install_start
   source_esp=$(esp_partition_on "$live_disk" || true)
   [[ -n $source_esp ]] || fail "no ESP on the live USB $source_dev"
   esp_part=$(existing_esp_on "$target_name" || true)
@@ -720,7 +749,6 @@ install_into_free_space() {
   printf 'omarchy-mac\n' >"$root_mnt/etc/hostname"
   cat >"$root_mnt/etc/issue" <<'EOF'
 Omarchy Mac (installed). SDDM autologin.
-Wi-Fi: nmtui Rescan, then Activate if the session has no network.
 EOF
   rm -f "$root_mnt/omarchy-mac-overlay-write"
   : >"$root_mnt/etc/machine-id"
@@ -748,11 +776,27 @@ EOF
   lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID "$target_dev"
 }
 
+# One gum-choose row per existing Omarchy root. First field is the
+# partition node so two roots (NVMe hole vs USB stick) cannot be confused.
+existing_root_row() {
+  local root_part=$1
+  local disk size model where
+  disk=$(lsblk -no PKNAME "$root_part")
+  size=$(lsblk -dn -o SIZE "$root_part")
+  model=$(lsblk -dn -o MODEL "/dev/$disk" | tr -s ' ')
+  if disk_is_nvme "$disk"; then
+    where="internal NVMe — other partitions stay"
+  else
+    where="USB stick — ${model:-usb}"
+  fi
+  printf '%s  %s  %s\n' "$root_part" "$size" "$where"
+}
+
 # Replace the filesystem on an existing OMARCHYROOT. No mkpart, no mklabel,
 # no wipefs of the disk. The 46G NVMe hole (p7) is this path: the GPT gap
 # is already a partition, so free-space install would find nothing.
 install_over_existing_root() {
-  local name model extra size
+  local name size
   local candidates=()
   local source_esp esp_part root_part root_mnt
   local root_uuid esp_uuid payload_bytes payload_mnt
@@ -760,13 +804,12 @@ install_over_existing_root() {
 
   command -v parted >/dev/null || fail "parted not found"
   require_graphical_payload
-  ask_desktop_user
 
   payload_bytes=$(lsblk -dn -b -o SIZE "$live_partition")
   source_esp=$(esp_partition_on "$live_disk" || true)
   [[ -n $source_esp ]] || fail "no ESP on the live USB $source_dev"
 
-  while read -r name model; do
+  while read -r name; do
     [[ $name == "$live_disk" ]] && continue
     existing_esp_on "$name" >/dev/null || continue
     root_part=$(existing_omarchy_root_on "$name" || true)
@@ -774,28 +817,27 @@ install_over_existing_root() {
     [[ $root_part == "$live_partition" ]] && continue
     bytes=$(lsblk -dn -b -o SIZE "$root_part")
     (( bytes >= payload_bytes + 64 * 1024 * 1024 )) || continue
-    size=$(lsblk -dn -o SIZE "$root_part")
-    extra=""
-    disk_has_apple_partitions "$name" && extra=" (keeps APFS)"
-    disk_is_nvme "$name" && extra="${extra} nvme"
-    candidates+=("$name  $root_part $size  ${model:-disk}${extra}")
-  done < <(lsblk -dn -o NAME,MODEL)
+    candidates+=("$(existing_root_row "$root_part")")
+  done < <(lsblk -dn -o NAME)
 
   (( ${#candidates[@]} > 0 )) || fail "no existing OMARCHYROOT is large enough (need payload + 64MiB). Install into free space first, or pick a bigger partition."
 
-  choice=$(printf '%s\n' "${candidates[@]}" | gum choose --header "Replace which existing OMARCHYROOT? Partition table stays.")
+  choice=$(printf '%s\n' "${candidates[@]}" | gum choose --header "Which Omarchy root partition should be replaced? Not the ESP.")
   [[ -n $choice ]] || fail "cancelled"
-  target_name=${choice%% *}
+  root_part=${choice%% *}
+  [[ $root_part == /dev/* ]] || fail "could not parse partition from selection"
+  target_name=$(lsblk -no PKNAME "$root_part")
+  [[ -n $target_name ]] || fail "could not find the disk for $root_part"
   target_dev=/dev/$target_name
   esp_part=$(existing_esp_on "$target_name") || fail "$target_dev has no ESP"
-  root_part=$(existing_omarchy_root_on "$target_name") || fail "$target_dev has no OMARCHYROOT"
   [[ $root_part == "$live_partition" ]] && fail "refusing to overwrite the live payload"
   size=$(lsblk -dn -o SIZE "$root_part")
 
   printf '==> selected %s on %s (%s)\n' "$root_part" "$target_dev" "$size"
+  ask_desktop_user
   printf '==> confirm (arrow keys, then enter)\n'
   gum confirm \
-    "REPLACE $root_part ($size) on $target_dev. APFS/iBoot/Recovery, other partitions, and the GPT stay. No mklabel, no mkpart, no LUKS. Continue?" \
+    "Replace ONLY $root_part ($size) on $target_dev. Not the ESP. Other partitions stay. No mklabel, no mkpart, no LUKS. Continue?" \
     || fail "cancelled"
 
   if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
@@ -805,6 +847,7 @@ install_over_existing_root() {
     return 0
   fi
 
+  mark_install_start
   if (( running_from_this_live_usb != 1 )); then
     payload_mnt=$(findmnt -n -o TARGET "$live_partition" || true)
     if [[ -n $payload_mnt ]]; then
@@ -865,7 +908,6 @@ install_over_existing_root() {
   printf 'omarchy-mac\n' >"$root_mnt/etc/hostname"
   cat >"$root_mnt/etc/issue" <<'EOF'
 Omarchy Mac (installed). SDDM autologin.
-Wi-Fi: nmtui Rescan, then Activate if the session has no network.
 EOF
   rm -f "$root_mnt/omarchy-mac-overlay-write"
   : >"$root_mnt/etc/machine-id"
@@ -903,24 +945,24 @@ install_grub_for_existing_root() {
   source_esp=$(esp_partition_on "$live_disk" || true)
   [[ -n $source_esp ]] || fail "no ESP on the live USB $source_dev"
 
-  while read -r name model; do
+  while read -r name; do
     [[ $name == "$live_disk" ]] && continue
     existing_esp_on "$name" >/dev/null || continue
-    existing_omarchy_root_on "$name" >/dev/null || continue
-    extra=""
-    disk_has_apple_partitions "$name" && extra=" (keeps APFS)"
-    disk_is_nvme "$name" && extra="${extra} nvme"
-    candidates+=("$name  OMARCHYROOT on ${model:-disk}${extra}")
-  done < <(lsblk -dn -o NAME,MODEL)
+    root_part=$(existing_omarchy_root_on "$name" || true)
+    [[ -n $root_part ]] || continue
+    candidates+=("$(existing_root_row "$root_part")")
+  done < <(lsblk -dn -o NAME)
 
   (( ${#candidates[@]} > 0 )) || fail "no disk has both an ESP and an OMARCHYROOT (install into free space first)"
 
-  choice=$(printf '%s\n' "${candidates[@]}" | gum choose --header "Write GRUB for which existing OMARCHYROOT?")
+  choice=$(printf '%s\n' "${candidates[@]}" | gum choose --header "Write GRUB for which Omarchy root? Filesystem stays.")
   [[ -n $choice ]] || fail "cancelled"
-  target_name=${choice%% *}
+  root_part=${choice%% *}
+  [[ $root_part == /dev/* ]] || fail "could not parse partition from selection"
+  target_name=$(lsblk -no PKNAME "$root_part")
+  [[ -n $target_name ]] || fail "could not find the disk for $root_part"
   target_dev=/dev/$target_name
   esp_part=$(existing_esp_on "$target_name") || fail "$target_dev has no ESP"
-  root_part=$(existing_omarchy_root_on "$target_name") || fail "$target_dev has no OMARCHYROOT"
   root_uuid=$(blkid -s UUID -o value "$root_part")
   [[ -n $root_uuid ]] || fail "no UUID on $root_part"
 
@@ -936,25 +978,36 @@ install_grub_for_existing_root() {
     return 0
   fi
 
+  mark_install_start
   esp_mode=$(apply_system_esp_bootloader "$esp_part" "$root_uuid" "$source_esp")
   printf '==> done. GRUB mode=%s ESP=%s root=%s UUID=%s\n' \
     "$esp_mode" "$esp_part" "$root_part" "$root_uuid"
   lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID "$target_dev"
 }
 
-action=$(gum choose --header "Omarchy Mac live USB" \
-  "Install into free space (keeps existing partitions)" \
-  "Replace an existing OMARCHYROOT (no new partition)" \
-  "Install GRUB for an existing OMARCHYROOT (no new partition)" \
-  "Install to a blank USB (wipes the whole disk)" \
+omarchy_path=${OMARCHY_PATH:-/usr/share/omarchy}
+if [[ -f $omarchy_path/logo.txt ]]; then
+  clear
+  printf '\033[32m'
+  cat "$omarchy_path/logo.txt"
+  printf '\033[0m\n'
+fi
+
+action=$(gum choose --header "How should this machine be installed?" \
+  "Install into free space (keeps macOS and existing partitions)" \
+  "Reinstall an existing Omarchy root (you pick the partition)" \
+  "Write GRUB for an existing Omarchy root (no copy)" \
+  "Wipe a USB stick and install (never NVMe, never APFS)" \
   "Clone this live USB onto another stick")
 [[ -n $action ]] || fail "cancelled"
 
 case $action in
   "Install into free space"*) install_into_free_space ;;
-  "Replace an existing OMARCHYROOT"*) install_over_existing_root ;;
-  "Install GRUB for an existing"*) install_grub_for_existing_root ;;
-  "Install to a blank USB"*) install_persistent_root ;;
+  "Reinstall an existing Omarchy root"*) install_over_existing_root ;;
+  "Write GRUB for an existing"*) install_grub_for_existing_root ;;
+  "Wipe a USB stick"*) install_persistent_root ;;
   Clone*) clone_live_usb ;;
   *) fail "unknown action" ;;
 esac
+
+offer_reboot_after_install
