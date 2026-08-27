@@ -1,0 +1,94 @@
+#!/bin/bash
+# Copy the current installer onto the plugged-in live USB (OMARCHYLIVE +
+# OMARCHYISO) without an 8.6G --usb --rootfs rebuild.
+set -euo pipefail
+(( EUID == 0 )) || { echo "run as root: sudo $0"; exit 1; }
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+live=""
+iso=""
+for d in /dev/sda2 /dev/sdb2 /dev/sdc2; do
+  [[ -b $d ]] || continue
+  label=$(blkid -s LABEL -o value "$d" 2>/dev/null || true)
+  [[ $label == OMARCHYLIVE ]] || continue
+  live=$d
+  break
+done
+for d in /dev/sda1 /dev/sdb1 /dev/sdc1; do
+  [[ -b $d ]] || continue
+  label=$(blkid -s LABEL -o value "$d" 2>/dev/null || true)
+  [[ $label == OMARCHYISO ]] || continue
+  iso=$d
+  break
+done
+[[ -n $live ]] || { echo "error: OMARCHYLIVE not found (plug in the live USB)"; exit 1; }
+[[ -n $iso ]] || { echo "error: OMARCHYISO not found"; exit 1; }
+
+mnt=$(findmnt -n -o TARGET "$live" || true)
+mounted_live=0
+if [[ -z $mnt ]]; then
+  mnt=$(mktemp -d)
+  mount -o subvol=@ "$live" "$mnt"
+  mounted_live=1
+fi
+iso_mnt=$(findmnt -n -o TARGET "$iso" || true)
+mounted_iso=0
+if [[ -z $iso_mnt ]]; then
+  iso_mnt=$(mktemp -d)
+  mount "$iso" "$iso_mnt"
+  mounted_iso=1
+fi
+cleanup() {
+  if (( mounted_iso == 1 )); then
+    umount "$iso_mnt" 2>/dev/null || true
+    rmdir "$iso_mnt" 2>/dev/null || true
+  fi
+  if (( mounted_live == 1 )); then
+    umount "$mnt" 2>/dev/null || true
+    rmdir "$mnt" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+share=$mnt/usr/local/share/omarchy-mac-iso
+install -d "$mnt/usr/local/sbin" "$share" "$share/initcpio/hooks" "$share/initcpio/install" "$mnt/root"
+install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-install" "$mnt/usr/local/sbin/omarchy-mac-install"
+install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-live-welcome" "$mnt/usr/local/sbin/omarchy-mac-live-welcome"
+install -m644 "$repo_root/configs/usb/rootfs/root-bash-profile" "$mnt/root/.bash_profile"
+install -m644 "$repo_root/configs/usb/rootfs/issue" "$mnt/etc/issue"
+install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-disk.sh" "$share/omarchy-mac-disk.sh"
+install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-disk.sh" "$mnt/usr/local/sbin/omarchy-mac-disk.sh"
+install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh" "$share/omarchy-mac-esp.sh"
+install -m644 "$repo_root/configs/usb/grub-embed.cfg" "$share/grub-embed.cfg"
+install -m644 "$repo_root/configs/usb/grub-embed-install.cfg" "$share/grub-embed-install.cfg"
+install -m644 "$repo_root/configs/usb/grub-embed-system.cfg" "$share/grub-embed-system.cfg"
+install -m644 "$repo_root/configs/usb-initcpio/mkinitcpio-install.conf" "$share/mkinitcpio-install.conf"
+install -m644 "$repo_root/configs/usb-initcpio/hooks/omarchy-usb-wait" "$share/initcpio/hooks/omarchy-usb-wait"
+install -m644 "$repo_root/configs/usb-initcpio/install/omarchy-usb-wait" "$share/initcpio/install/omarchy-usb-wait"
+install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-asahi-hw.service" \
+  "$mnt/etc/systemd/system/omarchy-mac-asahi-hw.service"
+if [[ -d $iso_mnt/grub ]]; then
+  install -m644 "$repo_root/configs/usb/grub.cfg" "$iso_mnt/grub/grub.cfg"
+fi
+echo "==> copied installer onto the live USB"
+
+echo "==> pacman --sysroot $mnt -Sy"
+pacman --sysroot "$mnt" -Sy --noconfirm
+echo "==> pacman --sysroot $mnt -S foot xdg-terminal-exec chromium"
+pacman --sysroot "$mnt" -S --noconfirm --needed foot xdg-terminal-exec chromium
+[[ -x $mnt/usr/bin/foot && -x $mnt/usr/bin/chromium && -x $mnt/usr/bin/xdg-terminal-exec ]] \
+  || { echo "error: desktop packages missing after install"; exit 1; }
+
+out=/tmp/initramfs-omarchy-usb-root.img
+kver=$(uname -r)
+mkinitcpio -n \
+  -c "$repo_root/configs/usb-initcpio/mkinitcpio-install.conf" \
+  -D /usr/lib/initcpio \
+  -D "$repo_root/configs/usb-initcpio" \
+  -k "$kver" \
+  -g "$out"
+cp -a "$out" "$iso_mnt/initramfs-linux-asahi.img"
+sync
+grep -q 'Reinstall an existing Omarchy root' "$mnt/usr/local/sbin/omarchy-mac-install"
+echo "==> wrote $iso_mnt/initramfs-linux-asahi.img"
+echo "==> Shutdown, boot the live USB."
