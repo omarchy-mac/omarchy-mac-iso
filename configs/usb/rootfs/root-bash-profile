@@ -1,0 +1,8 @@
+# Live USB tty1 autologin. Installed roots delete /omarchy-mac-overlay-write
+# and drop this getty, so a TTY login there does not re-enter the installer.
+if [[ -e /omarchy-mac-overlay-write && -t 0 ]]; then
+  tty=$(tty 2>/dev/null || true)
+  if [[ $tty == /dev/tty1 ]]; then
+    /usr/local/sbin/omarchy-mac-live-welcome
+  fi
+fi

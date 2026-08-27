@@ -72,7 +72,7 @@ write_piggyback_esp_grub() {
   cat >"$esp_mnt/grub/custom.cfg" <<EOF
 menuentry 'Omarchy Mac (new root $root_uuid)' {
   search --no-floppy --file /omarchy-mac-root --set=root
-  linux /EFI/omarchy/vmlinuz root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
+  linux /EFI/omarchy/vmlinuz root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3 quiet splash
   initrd /EFI/omarchy/initramfs.img
 }
 EOF
@@ -105,7 +105,7 @@ set default=0
 search --no-floppy --file /omarchy-mac-root --set=root
 
 menuentry 'Omarchy Mac' {
-  linux /EFI/omarchy/vmlinuz root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
+  linux /EFI/omarchy/vmlinuz root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3 quiet splash
   initrd /EFI/omarchy/initramfs.img
 }
 EOF

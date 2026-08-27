@@ -1,0 +1,42 @@
+#!/bin/bash
+# First login on the live USB (tty1 autologin root). Explain that this
+# stick is the installer and offer to start omarchy-mac-install.
+# Installed roots drop /omarchy-mac-overlay-write, so this is a no-op there.
+set -euo pipefail
+
+[[ -e /omarchy-mac-overlay-write ]] || exit 0
+[[ -t 0 && -t 1 ]] || exit 0
+command -v gum >/dev/null || exit 0
+
+# tty1 is also the kmsg console. printk overwrites gum.
+dmesg -n 1 2>/dev/null || true
+
+omarchy_path=${OMARCHY_PATH:-/usr/share/omarchy}
+if [[ -f $omarchy_path/logo.txt ]]; then
+  clear
+  printf '\033[32m'
+  cat "$omarchy_path/logo.txt"
+  printf '\033[0m\n'
+else
+  clear
+fi
+
+cat <<'EOF'
+  This stick is the installer, not an installed desktop.
+  Install never touches APFS. You pick which partition next.
+
+  Arrow keys, then enter.
+
+EOF
+
+choice=$(gum choose --header "What next?" \
+  "Install Omarchy" \
+  "Open a shell") || true
+
+case $choice in
+  "Install Omarchy")
+    exec omarchy-mac-install
+    ;;
+esac
+
+printf '\nInstall: omarchy-mac-install\n\n'

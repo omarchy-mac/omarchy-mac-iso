@@ -64,6 +64,12 @@ check "rootfs pacstraps mesa and gum" grep -q ' mesa ' \
   "${repo_root}/builder/build-rootfs.sh"
 check "rootfs extra packages include hyprland" grep -qx hyprland \
   "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs extra packages include foot" grep -qx foot \
+  "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs extra packages include xdg-terminal-exec" grep -qx xdg-terminal-exec \
+  "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs extra packages include chromium" grep -qx chromium \
+  "${repo_root}/configs/usb/rootfs/packages"
 check "rootfs extra packages omit linux-asahi" \
   bash -c '! grep -qx linux-asahi "'"${repo_root}"'/configs/usb/rootfs/packages"'
 check "rootfs extra packages omit asahi-scripts" \
@@ -94,12 +100,57 @@ check "install script keeps overlay lowerdir mounted" grep -q omarchy-mac-overla
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "install script rewrites clone btrfs UUID" grep -q 'btrfstune -f -u' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
-check "install script offers persistent root install" grep -q 'Install to a blank USB' \
+check "install script offers persistent root install" grep -q 'Wipe a USB stick and install' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installed root enables sddm" grep -q 'enable sddm.service' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "session file is looked up in usr/local/share" grep -q \
+  'usr/local/share/wayland-sessions/omarchy.desktop' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "graphical payload is required before wipefs" \
+  bash -c 'awk "/^install_persistent_root\\(\\)/,/wipefs/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q require_graphical_payload'
+check "desktop user is asked before the payload copy" \
+  bash -c 'awk "/^install_persistent_root\\(\\)/,/copying payload/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q ask_desktop_user'
+check "install initrd can come from a wipe-installed USB ESP" grep -q \
+  'initramfs-omarchy-usb-root.img ]]; then' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installed root uses graphical.target" grep -q 'set-default graphical.target' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installed root creates a desktop user on @home" grep -q 'subvol=@home' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installed root seeds Tokyo Night" grep -q 'omarchy-theme-set "Tokyo Night"' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installed USB GRUB uses quiet splash" grep -q 'loglevel=3 quiet splash' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "system ESP GRUB uses quiet splash" grep -q 'loglevel=3 quiet splash' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
+check "installed root drops getty autologin" grep -q 'autologin.conf' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "live rootfs stays multi-user.target" grep -q 'set-default multi-user.target' \
+  "${repo_root}/builder/build-rootfs.sh"
 check "install script offers free-space install" grep -q 'Install into free space' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "free-space install does not wipefs" \
   bash -c 'awk "/^install_into_free_space\\(\\)/,/^action=/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -qv wipefs'
+check "install script offers reinstall existing Omarchy root" grep -q \
+  'Reinstall an existing Omarchy root' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "reinstall picker names the partition first" grep -q 'existing_root_row' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "reinstall picker distinguishes internal NVMe from USB" grep -q \
+  'internal NVMe' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "live GRUB quiets console kmsg" grep -q 'loglevel=3 quiet' \
+  "${repo_root}/configs/usb/grub.cfg"
+check "replace existing root does not mkpart or mklabel" \
+  bash -c '! awk "/^install_over_existing_root\\(\\)/,/^install_grub_for_existing_root/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -qE "wipefs -a|mklabel gpt|[[:space:]]mkpart root"'
+check "replace existing root asks the desktop user before dd" \
+  bash -c 'awk "/^install_over_existing_root\\(\\)/,/copying payload/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q ask_desktop_user'
+check "replace existing root refuses the live payload" grep -q \
+  'refusing to overwrite the live payload' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "replace existing root checks Apple types after dd" \
+  bash -c 'awk "/^install_over_existing_root\\(\\)/,/^install_grub_for_existing_root/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q before_apple'
 check "sh -n omarchy-mac-disk.sh" bash -n \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-disk.sh"
 check "partition loopback tests" "${repo_root}/test/partition"
@@ -107,6 +158,28 @@ check "install script labels the installed root OMARCHYROOT" grep -q OMARCHYROOT
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "sh -n omarchy-mac-install" bash -n \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "install reports how long it took" grep -q 'finished in' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "install offers reboot when finished" grep -q 'Yes, reboot' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "install timer starts after the last confirm" grep -q mark_install_start \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "sh -n omarchy-mac-live-welcome" bash -n \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-live-welcome"
+check "live welcome only runs on the overlay" grep -q omarchy-mac-overlay-write \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-live-welcome"
+check "live welcome offers Install Omarchy" grep -q 'Install Omarchy' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-live-welcome"
+check "live welcome prints the Omarchy wordmark" grep -q logo.txt \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-live-welcome"
+check "install menu prints the Omarchy wordmark" grep -q logo.txt \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "live welcome execs the installer" grep -q 'exec omarchy-mac-install' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-live-welcome"
+check "rootfs installs live welcome on tty1 autologin" grep -q omarchy-mac-live-welcome \
+  "${repo_root}/builder/build-rootfs.sh"
+check "root bash_profile only runs welcome on tty1" grep -q '/dev/tty1' \
+  "${repo_root}/configs/usb/rootfs/root-bash-profile"
 check "usb grub embed loads /grub/grub.cfg" grep -q 'configfile /grub/grub.cfg' \
   "${repo_root}/configs/usb/grub-embed.cfg"
 check "live GRUB searches omarchy-usb-live not NVMe grub.cfg" grep -q /omarchy-usb-live \
@@ -114,6 +187,9 @@ check "live GRUB searches omarchy-usb-live not NVMe grub.cfg" grep -q /omarchy-u
 check "install GRUB searches omarchy-usb-install" grep -q /omarchy-usb-install \
   "${repo_root}/configs/usb/grub-embed-install.cfg"
 check "install initramfs waits for USB root" grep -q OMARCHYROOT \
+  "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-wait"
+check "usb-wait does not succeed on OMARCHYROOT when UUID is set" grep -q \
+  'if \[ -z "$uuid" \] && \[ -e /dev/disk/by-label/OMARCHYROOT \]' \
   "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-wait"
 check "install initramfs lists dwc3_apple" grep -q dwc3_apple \
   "${repo_root}/configs/usb-initcpio/mkinitcpio-install.conf"
@@ -125,7 +201,7 @@ check "usb image embeds grub-embed.cfg" grep -q grub-embed.cfg \
   "${repo_root}/builder/build-usb-image.sh"
 check "usb image builds install initramfs" grep -q initramfs-linux-asahi.img \
   "${repo_root}/builder/build-usb-image.sh"
-check "install copies initramfs from live ESP" grep -q 'initramfs-linux-asahi.img on the live ESP' \
+check "install copies initramfs from live ESP" grep -q 'no install initramfs on' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "install initrd name is unique vs NVMe" grep -q initramfs-omarchy-usb-root.img \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
@@ -143,7 +219,7 @@ check "sh -n omarchy-mac-esp.sh" bash -n \
 check "esp-grub loopback tests" "${repo_root}/test/esp-grub"
 check "system GRUB embed searches omarchy-mac-root" grep -q /omarchy-mac-root \
   "${repo_root}/configs/usb/grub-embed-system.cfg"
-check "install offers System ESP GRUB for existing root" grep -q 'Install GRUB for an existing OMARCHYROOT' \
+check "install offers System ESP GRUB for existing root" grep -q 'Write GRUB for an existing Omarchy root' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "own-mode writes BOOTAA64 when the ESP has none" grep -q write_owned_esp_grub \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"

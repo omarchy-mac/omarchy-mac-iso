@@ -7,6 +7,12 @@ quickshell
 uwsm
 sddm
 xdg-desktop-portal-hyprland
+# SUPER+Return → omarchy-launch-terminal → xdg-terminal-exec.
+# omarchy-base uses foot; without both, the desktop has no terminal.
+foot
+xdg-terminal-exec
+# SUPER+Shift+Return → omarchy-launch-browser (chromium.desktop).
+chromium
 snapper
 plymouth
 gnome-keyring

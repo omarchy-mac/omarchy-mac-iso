@@ -7,7 +7,8 @@ build() {
 
 help() {
   cat <<HELPEOF
-Wait for a USB root filesystem (UUID from the kernel cmdline, or label
-OMARCHYROOT) before the filesystems hook mounts it.
+Wait for a USB root filesystem (UUID from the kernel cmdline) before
+the filesystems hook mounts it. LABEL=OMARCHYROOT is only used when
+the cmdline has no UUID — that label also exists on NVMe hole installs.
 HELPEOF
 }
