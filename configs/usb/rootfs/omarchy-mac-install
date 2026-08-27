@@ -1,7 +1,7 @@
 #!/bin/bash
 # Clone this live USB, wipe-install a USB, or install into GPT free space
-# (never mklabel a disk that already has Apple partitions). Not an Omarchy
-# desktop install. No LUKS on this cut.
+# (never mklabel a disk that already has Apple partitions). LUKS is offered
+# on wipe-USB only; free-space and replace-existing stay unencrypted.
 set -euo pipefail
 
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -389,9 +389,10 @@ EOF
 }
 
 install_persistent_root() {
-  local payload_bytes min_bytes source_esp esp_part root_part
+  local payload_bytes min_bytes source_esp esp_part root_part root_dev
   local root_mnt esp_mnt live_esp_mnt
-  local root_uuid esp_uuid grub_cfg work
+  local root_uuid esp_uuid luks_uuid grub_cfg work
+  local encrypt_root=0 linux_line
 
   command -v parted >/dev/null || fail "parted not found"
   command -v mkfs.vfat >/dev/null || fail "mkfs.vfat not found — rebuild with --usb --rootfs (dosfstools)"
@@ -406,9 +407,15 @@ install_persistent_root() {
   pick_target_disk "$min_bytes"
   printf '==> confirm DESTROY of %s (arrow keys, then enter)\n' "$target_dev"
   gum confirm \
-    "DESTROY $target_dev (${choice#*  }) and install a persistent USB root (no overlay, no LUKS)?" \
+    "DESTROY $target_dev (${choice#*  }) and install a persistent USB root (no overlay)?" \
     || fail "cancelled"
   printf '==> confirmed\n'
+  if gum confirm --default --affirmative "Encrypt" --negative "No encryption" \
+    "Encrypt the disk? Recommended. Same password as the desktop user."; then
+    encrypt_root=1
+    command -v cryptsetup >/dev/null \
+      || fail "cryptsetup not found — rebuild with --usb --rootfs"
+  fi
 
   mark_install_start
   source_esp=$(esp_partition_on "$live_disk" || true)
@@ -436,31 +443,44 @@ install_persistent_root() {
   printf '==> formatting ESP %s\n' "$esp_part"
   mkfs.vfat -F 32 -n OMARCHYBOOT "$esp_part"
 
-  printf '==> copying payload %s -> %s\n' "$live_partition" "$root_part"
-  dd if="$live_partition" of="$root_part" bs=4M status=progress conv=fsync oflag=sync
+  root_dev=$root_part
+  if (( encrypt_root == 1 )); then
+    printf '==> luksFormat %s\n' "$root_part"
+    printf '%s' "$desktop_pass" | cryptsetup luksFormat --type luks2 --batch-mode --key-file=- "$root_part"
+    printf '%s' "$desktop_pass" | cryptsetup open --key-file=- "$root_part" root
+    root_dev=/dev/mapper/root
+    luks_uuid=$(blkid -s UUID -o value "$root_part")
+    [[ -n $luks_uuid ]] || fail "no UUID on LUKS container $root_part"
+  fi
+
+  printf '==> copying payload %s -> %s\n' "$live_partition" "$root_dev"
+  dd if="$live_partition" of="$root_dev" bs=4M status=progress conv=fsync oflag=sync
   sync
   partprobe "$target_dev" 2>/dev/null || true
   command -v udevadm >/dev/null && udevadm settle --timeout=5 || true
 
   root_mnt=$(mktemp -d)
-  mount -o subvol=@ "$root_part" "$root_mnt"
-  printf '==> btrfs resize max on %s\n' "$root_part"
+  mount -o subvol=@ "$root_dev" "$root_mnt"
+  printf '==> btrfs resize max on %s\n' "$root_dev"
   btrfs filesystem resize max "$root_mnt"
   btrfs filesystem label "$root_mnt" OMARCHYROOT
   umount "$root_mnt"
 
   if command -v btrfs >/dev/null; then
-    btrfs device scan --forget "$root_part" || true
+    btrfs device scan --forget "$root_dev" || true
   fi
-  btrfstune -f -u "$root_part"
-  mount -o subvol=@ "$root_part" "$root_mnt"
+  btrfstune -f -u "$root_dev"
+  mount -o subvol=@ "$root_dev" "$root_mnt"
 
-  root_uuid=$(blkid -s UUID -o value "$root_part")
-  [[ -n $root_uuid ]] || fail "no UUID on $root_part after btrfstune"
+  root_uuid=$(blkid -s UUID -o value "$root_dev")
+  [[ -n $root_uuid ]] || fail "no UUID on $root_dev after btrfstune"
 
   printf 'UUID=%s / btrfs subvol=@,compress=zstd:1 0 0\n' "$root_uuid" >"$root_mnt/etc/fstab"
   printf 'UUID=%s /home btrfs subvol=@home,compress=zstd:1 0 0\n' "$root_uuid" >>"$root_mnt/etc/fstab"
   printf 'UUID=%s /var/log btrfs subvol=@log,compress=zstd:1 0 0\n' "$root_uuid" >>"$root_mnt/etc/fstab"
+  if (( encrypt_root == 1 )); then
+    printf 'root UUID=%s none luks,discard,x-initrd.attach\n' "$luks_uuid" >"$root_mnt/etc/crypttab"
+  fi
   printf 'omarchy-mac\n' >"$root_mnt/etc/hostname"
   cat >"$root_mnt/etc/issue" <<'EOF'
 Omarchy Mac (installed). SDDM autologin.
@@ -496,6 +516,11 @@ EOF
     rmdir "$live_esp_mnt"
   fi
 
+  linux_line="root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3 quiet splash"
+  if (( encrypt_root == 1 )); then
+    linux_line="root=UUID=$root_uuid rw rootflags=subvol=@ cryptdevice=UUID=$luks_uuid:root:allow-discards loglevel=3 quiet splash"
+  fi
+
   grub_cfg=$work/grub.cfg
   cat >"$grub_cfg" <<EOF
 echo '========================================'
@@ -507,7 +532,7 @@ set default=0
 search --no-floppy --file /omarchy-usb-install --set=root
 
 menuentry 'Omarchy Mac (USB root)' {
-  linux /vmlinuz-linux-asahi root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3 quiet splash
+  linux /vmlinuz-linux-asahi $linux_line
   initrd /initramfs-omarchy-usb-root.img
 }
 EOF
@@ -525,12 +550,15 @@ EOF
   esp_uuid=$(blkid -s UUID -o value "$esp_part")
   printf 'UUID=%s /boot vfat defaults,fmask=0133,dmask=0022 0 2\n' "$esp_uuid" >>"$root_mnt/etc/fstab"
 
-  personalize_graphical_session "$root_mnt" "$root_part"
+  personalize_graphical_session "$root_mnt" "$root_dev"
 
   sync
   umount "$esp_mnt"
   umount "$root_mnt"
   rm -rf "$esp_mnt" "$root_mnt" "$work"
+  if (( encrypt_root == 1 )); then
+    cryptsetup close root
+  fi
 
   printf '==> done. Unplug the live USB %s, cold-start, boot the installed disk %s.\n' \
     "$source_dev" "$target_dev"

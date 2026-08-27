@@ -34,6 +34,9 @@ check "MINIROOTFS_SHA256 is 64 hex chars" bash -c "[[ '${MINIROOTFS_SHA256}' =~ 
 check "KERNEL_PKG_SHA256 is 64 hex chars" bash -c "[[ '${KERNEL_PKG_SHA256}' =~ ^[0-9a-f]{64}\$ ]]"
 
 check "omarchy-mac-iso-make --help works offline" "${repo_root}/bin/omarchy-mac-iso-make" --help
+check "refresh-live can update OMARCHYBOOT without the live USB" grep -q \
+  'OMARCHYBOOT' \
+  "${repo_root}/bin/omarchy-mac-iso-refresh-live"
 check "omarchy-mac-iso-make --help mentions --usb" \
   grep -q -- '--usb' <("${repo_root}/bin/omarchy-mac-iso-make" --help)
 check "omarchy-mac-iso-make --help mentions --rootfs" \
@@ -189,8 +192,27 @@ check "install GRUB searches omarchy-usb-install" grep -q /omarchy-usb-install \
 check "install initramfs waits for USB root" grep -q OMARCHYROOT \
   "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-wait"
 check "usb-wait does not succeed on OMARCHYROOT when UUID is set" grep -q \
-  'if \[ -z "$uuid" \] && \[ -e /dev/disk/by-label/OMARCHYROOT \]' \
+  'if \[ -z "$crypt_uuid" \] && \[ -z "$uuid" \] && \[ -e /dev/disk/by-label/OMARCHYROOT \]' \
   "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-wait"
+check "usb-wait prefers cryptdevice UUID over root UUID" grep -q \
+  'omarchy-usb-wait: cryptdevice UUID=' \
+  "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-wait"
+check "install initramfs runs encrypt after the USB wait" grep -q \
+  'omarchy-usb-wait encrypt filesystems' \
+  "${repo_root}/configs/usb-initcpio/mkinitcpio-install.conf"
+check "install initramfs starts plymouth before encrypt" grep -q \
+  'plymouth omarchy-usb-wait encrypt' \
+  "${repo_root}/configs/usb-initcpio/mkinitcpio-install.conf"
+check "wipe-USB install can luksFormat" grep -q 'cryptsetup luksFormat' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "wipe-USB GRUB can pass cryptdevice" grep -q 'cryptdevice=UUID=' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "free-space install does not luksFormat" \
+  bash -c '! awk "/^install_into_free_space\\(\\)/,/^install_over_existing_root/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q luksFormat'
+check "replace existing root does not luksFormat" \
+  bash -c '! awk "/^install_over_existing_root\\(\\)/,/^install_grub_for_existing_root/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q luksFormat'
+check "rootfs extra packages include cryptsetup" grep -qx cryptsetup \
+  "${repo_root}/configs/usb/rootfs/packages"
 check "install initramfs lists dwc3_apple" grep -q dwc3_apple \
   "${repo_root}/configs/usb-initcpio/mkinitcpio-install.conf"
 check "sh -n omarchy-usb-wait" sh -n \

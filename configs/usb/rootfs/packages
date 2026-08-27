@@ -13,6 +13,7 @@ foot
 xdg-terminal-exec
 # SUPER+Shift+Return → omarchy-launch-browser (chromium.desktop).
 chromium
+cryptsetup
 snapper
 plymouth
 gnome-keyring

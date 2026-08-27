@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: MIT
 #
 # Root is on USB. dwc3-apple can take several seconds. Wait for the
-# cmdline UUID before the filesystems hook mounts it. Do not treat
-# LABEL=OMARCHYROOT as success when a UUID is set: NVMe hole installs
-# use that label too, so the wait would return before USB enumerates.
+# device the next hook needs: cryptdevice UUID (LUKS) before encrypt,
+# otherwise root UUID before filesystems. Do not treat LABEL=OMARCHYROOT
+# as success when a UUID is set: NVMe hole installs use that label too.
 
 hang() {
   echo "==> $*" >/dev/console
@@ -14,12 +14,13 @@ hang() {
   done
 }
 
-root_uuid_from_cmdline() {
-  local arg
+uuid_from_cmdline() {
+  local prefix=$1 arg rest
   for arg in $(cat /proc/cmdline); do
     case "$arg" in
-      root=UUID=*)
-        echo "${arg#root=UUID=}"
+      ${prefix}=UUID=*)
+        rest=${arg#${prefix}=UUID=}
+        echo "${rest%%:*}"
         return 0
         ;;
     esac
@@ -35,14 +36,19 @@ run_hook() {
   fi
   sleep 2
 
-  uuid=$(root_uuid_from_cmdline || true)
+  crypt_uuid=$(uuid_from_cmdline cryptdevice || true)
+  uuid=$(uuid_from_cmdline root || true)
   i=0
   while [ "$i" -lt 45 ]; do
-    if [ -n "$uuid" ] && [ -e /dev/disk/by-uuid/"$uuid" ]; then
+    if [ -n "$crypt_uuid" ] && [ -e /dev/disk/by-uuid/"$crypt_uuid" ]; then
+      echo "==> omarchy-usb-wait: cryptdevice UUID=$crypt_uuid" >/dev/console
+      return 0
+    fi
+    if [ -z "$crypt_uuid" ] && [ -n "$uuid" ] && [ -e /dev/disk/by-uuid/"$uuid" ]; then
       echo "==> omarchy-usb-wait: root UUID=$uuid" >/dev/console
       return 0
     fi
-    if [ -z "$uuid" ] && [ -e /dev/disk/by-label/OMARCHYROOT ]; then
+    if [ -z "$crypt_uuid" ] && [ -z "$uuid" ] && [ -e /dev/disk/by-label/OMARCHYROOT ]; then
       echo "==> omarchy-usb-wait: root label=OMARCHYROOT" >/dev/console
       return 0
     fi
