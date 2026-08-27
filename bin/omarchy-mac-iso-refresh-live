@@ -1,94 +1,133 @@
 #!/bin/bash
-# Copy the current installer onto the plugged-in live USB (OMARCHYLIVE +
-# OMARCHYISO) without an 8.6G --usb --rootfs rebuild.
+# Update a plugged-in live USB (OMARCHYLIVE + OMARCHYISO) and/or a
+# wipe-installed USB (OMARCHYBOOT). Rebuilds the install initrd. Does not
+# need an 8.6G --usb --rootfs rebuild.
 set -euo pipefail
 (( EUID == 0 )) || { echo "run as root: sudo $0"; exit 1; }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-live=""
-iso=""
-for d in /dev/sda2 /dev/sdb2 /dev/sdc2; do
-  [[ -b $d ]] || continue
-  label=$(blkid -s LABEL -o value "$d" 2>/dev/null || true)
-  [[ $label == OMARCHYLIVE ]] || continue
-  live=$d
-  break
-done
-for d in /dev/sda1 /dev/sdb1 /dev/sdc1; do
-  [[ -b $d ]] || continue
-  label=$(blkid -s LABEL -o value "$d" 2>/dev/null || true)
-  [[ $label == OMARCHYISO ]] || continue
-  iso=$d
-  break
-done
-[[ -n $live ]] || { echo "error: OMARCHYLIVE not found (plug in the live USB)"; exit 1; }
-[[ -n $iso ]] || { echo "error: OMARCHYISO not found"; exit 1; }
 
-mnt=$(findmnt -n -o TARGET "$live" || true)
-mounted_live=0
-if [[ -z $mnt ]]; then
-  mnt=$(mktemp -d)
-  mount -o subvol=@ "$live" "$mnt"
-  mounted_live=1
-fi
-iso_mnt=$(findmnt -n -o TARGET "$iso" || true)
-mounted_iso=0
-if [[ -z $iso_mnt ]]; then
-  iso_mnt=$(mktemp -d)
-  mount "$iso" "$iso_mnt"
-  mounted_iso=1
-fi
+find_labelled() {
+  local want=$1 d label
+  for d in /dev/sda1 /dev/sda2 /dev/sdb1 /dev/sdb2 /dev/sdc1 /dev/sdc2; do
+    [[ -b $d ]] || continue
+    label=$(blkid -s LABEL -o value "$d" 2>/dev/null || true)
+    [[ $label == "$want" ]] || continue
+    printf '%s\n' "$d"
+    return 0
+  done
+  return 1
+}
+
+live=$(find_labelled OMARCHYLIVE || true)
+iso=$(find_labelled OMARCHYISO || true)
+boot=$(find_labelled OMARCHYBOOT || true)
+[[ -n $live || -n $boot ]] \
+  || { echo "error: plug in the live USB (OMARCHYLIVE) or an installed USB (OMARCHYBOOT)"; exit 1; }
+
+mounted=()
 cleanup() {
-  if (( mounted_iso == 1 )); then
-    umount "$iso_mnt" 2>/dev/null || true
-    rmdir "$iso_mnt" 2>/dev/null || true
-  fi
-  if (( mounted_live == 1 )); then
-    umount "$mnt" 2>/dev/null || true
-    rmdir "$mnt" 2>/dev/null || true
-  fi
+  local dir
+  for dir in "${mounted[@]}"; do
+    umount "$dir" 2>/dev/null || true
+    rmdir "$dir" 2>/dev/null || true
+  done
 }
 trap cleanup EXIT
 
-share=$mnt/usr/local/share/omarchy-mac-iso
-install -d "$mnt/usr/local/sbin" "$share" "$share/initcpio/hooks" "$share/initcpio/install" "$mnt/root"
-install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-install" "$mnt/usr/local/sbin/omarchy-mac-install"
-install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-live-welcome" "$mnt/usr/local/sbin/omarchy-mac-live-welcome"
-install -m644 "$repo_root/configs/usb/rootfs/root-bash-profile" "$mnt/root/.bash_profile"
-install -m644 "$repo_root/configs/usb/rootfs/issue" "$mnt/etc/issue"
-install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-disk.sh" "$share/omarchy-mac-disk.sh"
-install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-disk.sh" "$mnt/usr/local/sbin/omarchy-mac-disk.sh"
-install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh" "$share/omarchy-mac-esp.sh"
-install -m644 "$repo_root/configs/usb/grub-embed.cfg" "$share/grub-embed.cfg"
-install -m644 "$repo_root/configs/usb/grub-embed-install.cfg" "$share/grub-embed-install.cfg"
-install -m644 "$repo_root/configs/usb/grub-embed-system.cfg" "$share/grub-embed-system.cfg"
-install -m644 "$repo_root/configs/usb-initcpio/mkinitcpio-install.conf" "$share/mkinitcpio-install.conf"
-install -m644 "$repo_root/configs/usb-initcpio/hooks/omarchy-usb-wait" "$share/initcpio/hooks/omarchy-usb-wait"
-install -m644 "$repo_root/configs/usb-initcpio/install/omarchy-usb-wait" "$share/initcpio/install/omarchy-usb-wait"
-install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-asahi-hw.service" \
-  "$mnt/etc/systemd/system/omarchy-mac-asahi-hw.service"
-if [[ -d $iso_mnt/grub ]]; then
-  install -m644 "$repo_root/configs/usb/grub.cfg" "$iso_mnt/grub/grub.cfg"
-fi
-echo "==> copied installer onto the live USB"
+mount_if_needed() {
+  local dev=$1
+  local mnt
+  mnt=$(findmnt -n -o TARGET "$dev" || true)
+  if [[ -z $mnt ]]; then
+    mnt=$(mktemp -d)
+    mount "$dev" "$mnt"
+    mounted+=("$mnt")
+  fi
+  printf '%s\n' "$mnt"
+}
 
-echo "==> pacman --sysroot $mnt -Sy"
-pacman --sysroot "$mnt" -Sy --noconfirm
-echo "==> pacman --sysroot $mnt -S foot xdg-terminal-exec chromium"
-pacman --sysroot "$mnt" -S --noconfirm --needed foot xdg-terminal-exec chromium
-[[ -x $mnt/usr/bin/foot && -x $mnt/usr/bin/chromium && -x $mnt/usr/bin/xdg-terminal-exec ]] \
-  || { echo "error: desktop packages missing after install"; exit 1; }
+if [[ -n $live ]]; then
+  [[ -n $iso ]] || { echo "error: OMARCHYISO not found next to OMARCHYLIVE"; exit 1; }
+  mnt=$(mount_if_needed "$live")
+  if ! findmnt -n -o OPTIONS "$live" | grep -q subvol; then
+    # udisks may have mounted @ already; if we mounted the default, remount @.
+    :
+  fi
+  # Prefer subvol=@ for the payload.
+  if ! findmnt -n "$mnt" | grep -q '\[/@\]'; then
+    umount "$mnt" 2>/dev/null || true
+    mount -o subvol=@ "$live" "$mnt"
+  fi
+  iso_mnt=$(mount_if_needed "$iso")
+  share=$mnt/usr/local/share/omarchy-mac-iso
+  install -d "$mnt/usr/local/sbin" "$share" "$share/initcpio/hooks" "$share/initcpio/install" "$mnt/root"
+  install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-install" "$mnt/usr/local/sbin/omarchy-mac-install"
+  install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-live-welcome" "$mnt/usr/local/sbin/omarchy-mac-live-welcome"
+  install -m644 "$repo_root/configs/usb/rootfs/root-bash-profile" "$mnt/root/.bash_profile"
+  install -m644 "$repo_root/configs/usb/rootfs/issue" "$mnt/etc/issue"
+  install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-disk.sh" "$share/omarchy-mac-disk.sh"
+  install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-disk.sh" "$mnt/usr/local/sbin/omarchy-mac-disk.sh"
+  install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh" "$share/omarchy-mac-esp.sh"
+  install -m644 "$repo_root/configs/usb/grub-embed.cfg" "$share/grub-embed.cfg"
+  install -m644 "$repo_root/configs/usb/grub-embed-install.cfg" "$share/grub-embed-install.cfg"
+  install -m644 "$repo_root/configs/usb/grub-embed-system.cfg" "$share/grub-embed-system.cfg"
+  install -m644 "$repo_root/configs/usb-initcpio/mkinitcpio-install.conf" "$share/mkinitcpio-install.conf"
+  install -m644 "$repo_root/configs/usb-initcpio/hooks/omarchy-usb-wait" "$share/initcpio/hooks/omarchy-usb-wait"
+  install -m644 "$repo_root/configs/usb-initcpio/install/omarchy-usb-wait" "$share/initcpio/install/omarchy-usb-wait"
+  install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-asahi-hw.service" \
+    "$mnt/etc/systemd/system/omarchy-mac-asahi-hw.service"
+  if [[ -d $iso_mnt/grub ]]; then
+    install -m644 "$repo_root/configs/usb/grub.cfg" "$iso_mnt/grub/grub.cfg"
+  fi
+  echo "==> copied installer onto the live USB"
+  echo "==> pacman --sysroot $mnt -Sy"
+  pacman --sysroot "$mnt" -Sy --noconfirm
+  echo "==> pacman --sysroot $mnt -S foot xdg-terminal-exec chromium cryptsetup"
+  pacman --sysroot "$mnt" -S --noconfirm --needed foot xdg-terminal-exec chromium cryptsetup
+  [[ -x $mnt/usr/bin/cryptsetup ]] || { echo "error: cryptsetup missing after install"; exit 1; }
+fi
 
 out=/tmp/initramfs-omarchy-usb-root.img
 kver=$(uname -r)
+echo "==> mkinitcpio install initrd (plymouth then encrypt)"
 mkinitcpio -n \
   -c "$repo_root/configs/usb-initcpio/mkinitcpio-install.conf" \
   -D /usr/lib/initcpio \
   -D "$repo_root/configs/usb-initcpio" \
   -k "$kver" \
   -g "$out"
-cp -a "$out" "$iso_mnt/initramfs-linux-asahi.img"
+
+if [[ -n $iso ]]; then
+  iso_mnt=$(mount_if_needed "$iso")
+  cp -a "$out" "$iso_mnt/initramfs-linux-asahi.img"
+  echo "==> wrote $iso_mnt/initramfs-linux-asahi.img"
+fi
+
+if [[ -n $boot ]]; then
+  boot_mnt=$(mount_if_needed "$boot")
+  cp -a "$out" "$boot_mnt/initramfs-omarchy-usb-root.img"
+  echo "==> wrote $boot_mnt/initramfs-omarchy-usb-root.img"
+fi
+
+# If a USB LUKS root is already unlocked, stop systemd asking again.
+root_mnt=""
+while read -r name fstype; do
+  [[ $name == sd* && $fstype == crypto_LUKS ]] || continue
+  mapper=$(lsblk -ln -o NAME,TYPE "/dev/$name" | awk '$2=="crypt"{print $1; exit}')
+  [[ -n $mapper ]] || continue
+  root_mnt=$(findmnt -n -o TARGET "/dev/$mapper" || true)
+  [[ -n $root_mnt ]] && break
+done < <(lsblk -ln -o NAME,FSTYPE)
+if [[ -n $root_mnt && -f $root_mnt/etc/crypttab ]]; then
+  if grep -q x-initrd.attach "$root_mnt/etc/crypttab"; then
+    echo "==> crypttab already has x-initrd.attach"
+  else
+    sed -i 's/luks,discard$/luks,discard,x-initrd.attach/' "$root_mnt/etc/crypttab"
+    echo "==> patched $root_mnt/etc/crypttab"
+    cat "$root_mnt/etc/crypttab"
+  fi
+fi
+
 sync
-grep -q 'Reinstall an existing Omarchy root' "$mnt/usr/local/sbin/omarchy-mac-install"
-echo "==> wrote $iso_mnt/initramfs-linux-asahi.img"
-echo "==> Shutdown, boot the live USB."
+echo "==> Shutdown, boot the installed USB. Expect one branded unlock prompt."
