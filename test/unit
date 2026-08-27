@@ -64,6 +64,12 @@ check "rootfs pacstraps mesa and gum" grep -q ' mesa ' \
   "${repo_root}/builder/build-rootfs.sh"
 check "rootfs extra packages include hyprland" grep -qx hyprland \
   "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs extra packages include foot" grep -qx foot \
+  "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs extra packages include xdg-terminal-exec" grep -qx xdg-terminal-exec \
+  "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs extra packages include chromium" grep -qx chromium \
+  "${repo_root}/configs/usb/rootfs/packages"
 check "rootfs extra packages omit linux-asahi" \
   bash -c '! grep -qx linux-asahi "'"${repo_root}"'/configs/usb/rootfs/packages"'
 check "rootfs extra packages omit asahi-scripts" \
@@ -112,6 +118,12 @@ check "installed root uses graphical.target" grep -q 'set-default graphical.targ
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "installed root creates a desktop user on @home" grep -q 'subvol=@home' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installed root seeds Tokyo Night" grep -q 'omarchy-theme-set "Tokyo Night"' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installed USB GRUB uses quiet splash" grep -q 'loglevel=3 quiet splash' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "system ESP GRUB uses quiet splash" grep -q 'loglevel=3 quiet splash' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
 check "installed root drops getty autologin" grep -q 'autologin.conf' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "live rootfs stays multi-user.target" grep -q 'set-default multi-user.target' \
@@ -120,6 +132,18 @@ check "install script offers free-space install" grep -q 'Install into free spac
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "free-space install does not wipefs" \
   bash -c 'awk "/^install_into_free_space\\(\\)/,/^action=/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -qv wipefs'
+check "install script offers replace existing OMARCHYROOT" grep -q \
+  'Replace an existing OMARCHYROOT' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "replace existing root does not mkpart or mklabel" \
+  bash -c '! awk "/^install_over_existing_root\\(\\)/,/^install_grub_for_existing_root/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -qE "wipefs -a|mklabel gpt|[[:space:]]mkpart root"'
+check "replace existing root asks the desktop user before dd" \
+  bash -c 'awk "/^install_over_existing_root\\(\\)/,/copying payload/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q ask_desktop_user'
+check "replace existing root refuses the live payload" grep -q \
+  'refusing to overwrite the live payload' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "replace existing root checks Apple types after dd" \
+  bash -c 'awk "/^install_over_existing_root\\(\\)/,/^install_grub_for_existing_root/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q before_apple'
 check "sh -n omarchy-mac-disk.sh" bash -n \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-disk.sh"
 check "partition loopback tests" "${repo_root}/test/partition"
@@ -127,6 +151,18 @@ check "install script labels the installed root OMARCHYROOT" grep -q OMARCHYROOT
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "sh -n omarchy-mac-install" bash -n \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "sh -n omarchy-mac-live-welcome" bash -n \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-live-welcome"
+check "live welcome only runs on the overlay" grep -q omarchy-mac-overlay-write \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-live-welcome"
+check "live welcome offers Install Omarchy" grep -q 'Install Omarchy' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-live-welcome"
+check "live welcome execs the installer" grep -q 'exec omarchy-mac-install' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-live-welcome"
+check "rootfs installs live welcome on tty1 autologin" grep -q omarchy-mac-live-welcome \
+  "${repo_root}/builder/build-rootfs.sh"
+check "root bash_profile only runs welcome on tty1" grep -q '/dev/tty1' \
+  "${repo_root}/configs/usb/rootfs/root-bash-profile"
 check "usb grub embed loads /grub/grub.cfg" grep -q 'configfile /grub/grub.cfg' \
   "${repo_root}/configs/usb/grub-embed.cfg"
 check "live GRUB searches omarchy-usb-live not NVMe grub.cfg" grep -q /omarchy-usb-live \

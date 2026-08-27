@@ -152,6 +152,11 @@ install -d "$mnt/usr/local/sbin"
 install -d "$mnt/usr/local/share/omarchy-mac-iso"
 install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-install" \
   "$mnt/usr/local/sbin/omarchy-mac-install"
+install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-live-welcome" \
+  "$mnt/usr/local/sbin/omarchy-mac-live-welcome"
+install -d "$mnt/root"
+install -m644 "$repo_root/configs/usb/rootfs/root-bash-profile" \
+  "$mnt/root/.bash_profile"
 install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-disk.sh" \
   "$mnt/usr/local/share/omarchy-mac-iso/omarchy-mac-disk.sh"
 install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-disk.sh" \

@@ -262,6 +262,51 @@ ask_desktop_user() {
   [[ $desktop_pass == "$pass2" ]] || fail "passwords do not match"
 }
 
+# Same default as install/user/theme.sh. Seed at install so the first
+# frame is Tokyo Night even if first-run is slow. Failure is non-fatal:
+# omarchy-provision-first-run retries on login.
+seed_tokyo_night() {
+  local root_mnt=$1 user=$2
+  local bind
+  local -a bound=()
+
+  if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
+    printf 'dry-run: default theme Tokyo Night for %s\n' "$user"
+    return 0
+  fi
+  [[ -d $root_mnt/usr/share/omarchy/themes/tokyo-night ]] || return 0
+  [[ -x $root_mnt/usr/bin/omarchy-theme-set ]] || return 0
+
+  for bind in proc sys dev tmp; do
+    mkdir -p "$root_mnt/$bind"
+    if ! findmnt "$root_mnt/$bind" >/dev/null; then
+      if [[ $bind == tmp ]]; then
+        mount -t tmpfs tmpfs "$root_mnt/tmp"
+      else
+        mount --bind "/$bind" "$root_mnt/$bind"
+      fi
+      bound+=("$root_mnt/$bind")
+    fi
+  done
+
+  if chroot "$root_mnt" runuser -u "$user" -- env \
+      HOME=/home/"$user" USER="$user" LOGNAME="$user" \
+      OMARCHY_PATH=/usr/share/omarchy \
+      OMARCHY_SETUP_CONTEXT=iso-chroot \
+      OMARCHY_THEME_HEADLESS=1 \
+      omarchy-theme-set "Tokyo Night"
+  then
+    printf '==> default theme Tokyo Night for %s\n' "$user"
+  else
+    printf '==> Tokyo Night seed failed for %s; first login will retry\n' "$user"
+  fi
+
+  for bind in "${bound[@]}"; do
+    umount "$bind" 2>/dev/null || umount -l "$bind" 2>/dev/null || true
+  done
+  return 0
+}
+
 # Live USB stays tty autologin. Installed roots get a user, SDDM, and
 # graphical.target. Mount @home before useradd so /home isn't on @.
 personalize_graphical_session() {
@@ -285,6 +330,7 @@ personalize_graphical_session() {
   useradd --root "$root_mnt" -m -s /bin/bash \
     -G wheel,video,audio,input,render "$user"
   printf '%s:%s\n' "$user" "$pass" | chpasswd --root "$root_mnt"
+  seed_tokyo_night "$root_mnt" "$user"
   if (( home_mounted == 1 )); then
     umount "$root_mnt/home"
   fi
@@ -433,7 +479,7 @@ set default=0
 search --no-floppy --file /omarchy-usb-install --set=root
 
 menuentry 'Omarchy Mac (USB root)' {
-  linux /vmlinuz-linux-asahi root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3
+  linux /vmlinuz-linux-asahi root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3 quiet splash
   initrd /initramfs-omarchy-usb-root.img
 }
 EOF
@@ -702,6 +748,151 @@ EOF
   lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID "$target_dev"
 }
 
+# Replace the filesystem on an existing OMARCHYROOT. No mkpart, no mklabel,
+# no wipefs of the disk. The 46G NVMe hole (p7) is this path: the GPT gap
+# is already a partition, so free-space install would find nothing.
+install_over_existing_root() {
+  local name model extra size
+  local candidates=()
+  local source_esp esp_part root_part root_mnt
+  local root_uuid esp_uuid payload_bytes payload_mnt
+  local before_apple after_apple backup m esp_mode
+
+  command -v parted >/dev/null || fail "parted not found"
+  require_graphical_payload
+  ask_desktop_user
+
+  payload_bytes=$(lsblk -dn -b -o SIZE "$live_partition")
+  source_esp=$(esp_partition_on "$live_disk" || true)
+  [[ -n $source_esp ]] || fail "no ESP on the live USB $source_dev"
+
+  while read -r name model; do
+    [[ $name == "$live_disk" ]] && continue
+    existing_esp_on "$name" >/dev/null || continue
+    root_part=$(existing_omarchy_root_on "$name" || true)
+    [[ -n $root_part ]] || continue
+    [[ $root_part == "$live_partition" ]] && continue
+    bytes=$(lsblk -dn -b -o SIZE "$root_part")
+    (( bytes >= payload_bytes + 64 * 1024 * 1024 )) || continue
+    size=$(lsblk -dn -o SIZE "$root_part")
+    extra=""
+    disk_has_apple_partitions "$name" && extra=" (keeps APFS)"
+    disk_is_nvme "$name" && extra="${extra} nvme"
+    candidates+=("$name  $root_part $size  ${model:-disk}${extra}")
+  done < <(lsblk -dn -o NAME,MODEL)
+
+  (( ${#candidates[@]} > 0 )) || fail "no existing OMARCHYROOT is large enough (need payload + 64MiB). Install into free space first, or pick a bigger partition."
+
+  choice=$(printf '%s\n' "${candidates[@]}" | gum choose --header "Replace which existing OMARCHYROOT? Partition table stays.")
+  [[ -n $choice ]] || fail "cancelled"
+  target_name=${choice%% *}
+  target_dev=/dev/$target_name
+  esp_part=$(existing_esp_on "$target_name") || fail "$target_dev has no ESP"
+  root_part=$(existing_omarchy_root_on "$target_name") || fail "$target_dev has no OMARCHYROOT"
+  [[ $root_part == "$live_partition" ]] && fail "refusing to overwrite the live payload"
+  size=$(lsblk -dn -o SIZE "$root_part")
+
+  printf '==> selected %s on %s (%s)\n' "$root_part" "$target_dev" "$size"
+  printf '==> confirm (arrow keys, then enter)\n'
+  gum confirm \
+    "REPLACE $root_part ($size) on $target_dev. APFS/iBoot/Recovery, other partitions, and the GPT stay. No mklabel, no mkpart, no LUKS. Continue?" \
+    || fail "cancelled"
+
+  if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
+    printf 'dry-run: dd %s -> %s then btrfstune -u (no mkpart, no mklabel)\n' \
+      "$live_partition" "$root_part"
+    printf 'dry-run: would NOT mklabel, mkpart, or wipefs\n'
+    return 0
+  fi
+
+  if (( running_from_this_live_usb != 1 )); then
+    payload_mnt=$(findmnt -n -o TARGET "$live_partition" || true)
+    if [[ -n $payload_mnt ]]; then
+      umount "$payload_mnt" || fail "could not unmount $payload_mnt before dd"
+    fi
+  fi
+
+  backup=$(mktemp /tmp/omarchy-gpt-${target_name}.XXXXXX)
+  if command -v sfdisk >/dev/null; then
+    sfdisk --dump "$target_dev" >"$backup"
+    printf '==> GPT dump saved at %s\n' "$backup"
+  fi
+  before_apple=$(apple_partition_snapshot "$target_dev")
+
+  for _ in 1 2 3 4 5 6; do
+    m=$(findmnt -n -o TARGET "$root_part" || true)
+    [[ -z $m ]] && break
+    umount "$m" || umount -l "$m" || true
+    sleep 0.5
+  done
+  findmnt -n "$root_part" >/dev/null && fail "$root_part still mounted; cannot dd"
+
+  printf '==> copying payload %s -> %s\n' "$live_partition" "$root_part"
+  dd if="$live_partition" of="$root_part" bs=4M status=progress conv=fsync oflag=sync
+  sync
+  partprobe "$target_dev" 2>/dev/null || true
+  command -v udevadm >/dev/null && udevadm settle --timeout=5 || true
+
+  after_apple=$(apple_partition_snapshot "$target_dev")
+  if [[ $before_apple != "$after_apple" ]]; then
+    printf 'error: Apple partition types changed — aborting\n' >&2
+    printf 'before:\n%s\nafter:\n%s\n' "$before_apple" "$after_apple" >&2
+    exit 1
+  fi
+
+  for _ in 1 2 3 4 5 6; do
+    m=$(findmnt -n -o TARGET "$root_part" || true)
+    [[ -z $m ]] && break
+    umount "$m" || umount -l "$m" || true
+    sleep 0.5
+  done
+  findmnt -n "$root_part" >/dev/null && fail "$root_part still mounted; cannot btrfstune"
+  if command -v btrfs >/dev/null; then
+    btrfs device scan --forget "$root_part" || true
+  fi
+  btrfstune -f -u "$root_part"
+
+  root_mnt=$(mktemp -d)
+  mount -o subvol=@ "$root_part" "$root_mnt"
+  btrfs filesystem resize max "$root_mnt"
+  btrfs filesystem label "$root_mnt" OMARCHYROOT
+  root_uuid=$(blkid -s UUID -o value "$root_part")
+  [[ -n $root_uuid ]] || fail "no UUID on $root_part"
+
+  printf 'UUID=%s / btrfs subvol=@,compress=zstd:1 0 0\n' "$root_uuid" >"$root_mnt/etc/fstab"
+  printf 'UUID=%s /home btrfs subvol=@home,compress=zstd:1 0 0\n' "$root_uuid" >>"$root_mnt/etc/fstab"
+  printf 'UUID=%s /var/log btrfs subvol=@log,compress=zstd:1 0 0\n' "$root_uuid" >>"$root_mnt/etc/fstab"
+  printf 'omarchy-mac\n' >"$root_mnt/etc/hostname"
+  cat >"$root_mnt/etc/issue" <<'EOF'
+Omarchy Mac (installed). SDDM autologin.
+Wi-Fi: nmtui Rescan, then Activate if the session has no network.
+EOF
+  rm -f "$root_mnt/omarchy-mac-overlay-write"
+  : >"$root_mnt/etc/machine-id"
+
+  esp_mode=$(apply_system_esp_bootloader "$esp_part" "$root_uuid" "$source_esp")
+
+  esp_uuid=$(blkid -s UUID -o value "$esp_part")
+  printf 'UUID=%s /boot vfat defaults,fmask=0133,dmask=0022 0 2\n' "$esp_uuid" >>"$root_mnt/etc/fstab"
+
+  personalize_graphical_session "$root_mnt" "$root_part"
+
+  sync
+  umount "$root_mnt"
+  rmdir "$root_mnt" 2>/dev/null || true
+
+  printf '==> done. Did not mklabel or mkpart %s. Replaced %s UUID=%s\n' \
+    "$target_dev" "$root_part" "$root_uuid"
+  if [[ $esp_mode == own ]]; then
+    printf '    System ESP %s: wrote BOOTAA64.EFI (m1n1/vendorfw/asahi unchanged). GPT dump: %s\n' \
+      "$esp_part" "$backup"
+  else
+    printf '    Boot via existing ESP %s (custom.cfg). GPT dump: %s\n' \
+      "$esp_part" "$backup"
+  fi
+  lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID "$target_dev"
+}
+
 # Re-use an OMARCHYROOT already on the disk. Writes GRUB only: no mkpart, no dd.
 install_grub_for_existing_root() {
   local name model extra
@@ -753,6 +944,7 @@ install_grub_for_existing_root() {
 
 action=$(gum choose --header "Omarchy Mac live USB" \
   "Install into free space (keeps existing partitions)" \
+  "Replace an existing OMARCHYROOT (no new partition)" \
   "Install GRUB for an existing OMARCHYROOT (no new partition)" \
   "Install to a blank USB (wipes the whole disk)" \
   "Clone this live USB onto another stick")
@@ -760,6 +952,7 @@ action=$(gum choose --header "Omarchy Mac live USB" \
 
 case $action in
   "Install into free space"*) install_into_free_space ;;
+  "Replace an existing OMARCHYROOT"*) install_over_existing_root ;;
   "Install GRUB for an existing"*) install_grub_for_existing_root ;;
   "Install to a blank USB"*) install_persistent_root ;;
   Clone*) clone_live_usb ;;

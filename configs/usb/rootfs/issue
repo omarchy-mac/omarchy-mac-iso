@@ -1,10 +1,5 @@
-Omarchy Mac live USB (systemd). Not the installer yet.
-Wi-Fi: nmtui Rescan until SSIDs appear, then
-       nmtui Activate  or  nmcli device wifi connect 'SSID' password 'PSK'
-USB:   nmcli device connect enu1
-Check: cat /sys/module/hid_apple/parameters/fnmode   (want 1)
-       gum --version
-Install (WIP, wipes the target disk): omarchy-mac-install
-         gum: Install to a disk (persistent root) or Clone this live USB
+Omarchy Mac live USB. tty1 autologin starts the install prompt.
+Wi-Fi: nmtui Rescan until SSIDs appear, then Activate
+Install: omarchy-mac-install   (never touches APFS; you pick the disk)
 
 
