@@ -3,6 +3,14 @@
 build() {
   add_binary /usr/bin/udevadm
   add_runscript
+  # show_notch/fnmode must be in the initrd. appledrm/hid_apple load
+  # there (kms/asahi); a rootfs modprobe.d file is too late.
+  local conf_dir
+  conf_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../usb/modprobe.d" && pwd)"
+  [[ -f $conf_dir/hid_apple.conf ]] &&
+    add_file "$conf_dir/hid_apple.conf" /etc/modprobe.d/hid_apple.conf
+  [[ -f $conf_dir/asahi-notch.conf ]] &&
+    add_file "$conf_dir/asahi-notch.conf" /etc/modprobe.d/asahi-notch.conf
 }
 
 help() {

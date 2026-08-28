@@ -1,10 +1,11 @@
 #!/bin/bash
 # Clone this live USB, wipe-install a USB, or install into GPT free space
 # (never mklabel a disk that already has Apple partitions). LUKS is offered
-# on wipe-USB only; free-space and replace-existing stay unencrypted.
+# on wipe-USB, free-space, and replace-existing.
 set -euo pipefail
 
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+retry() { printf '==> %s\n' "$*" >&2; }
 
 # Wall time of the copy/personalize, not the gum questions.
 install_start=0
@@ -271,23 +272,169 @@ require_graphical_payload() {
     || fail "no Hyprland/omarchy wayland session in this payload — rebuild with --usb --rootfs"
 }
 
-# Ask before dd. A gum prompt after 30 minutes of copy dies if the lid
-# closes or the TTY goes away (Input/output error).
+# Ask before the payload copy. A gum prompt after a long copy dies if
+# the lid closes or the TTY goes away (Input/output error). Validation
+# failures re-prompt; they must not exit the installer.
 ask_desktop_user() {
   local pass2 reserved='^(root|bin|daemon|nobody|dbus|alpm|git|avahi|polkitd|sddm|uuidd)$'
   if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
     desktop_user=dryrun
     desktop_pass=dryrun
+    desktop_hostname=omarchy
     return 0
   fi
-  desktop_user=$(gum input --placeholder "Alphanumeric without spaces (like dhh)" --header "Username for the installed desktop")
-  [[ -n $desktop_user ]] || fail "cancelled"
-  [[ $desktop_user =~ ^[a-z_][a-z0-9_-]*$ ]] || fail "invalid username"
-  [[ $desktop_user =~ $reserved ]] && fail "username $desktop_user is reserved"
-  desktop_pass=$(gum input --password --placeholder "Used for the desktop user" --header "Password")
-  [[ -n $desktop_pass ]] || fail "cancelled"
-  pass2=$(gum input --password --placeholder "Must match the password you just typed" --header "Confirm password")
-  [[ $desktop_pass == "$pass2" ]] || fail "passwords do not match"
+  while true; do
+    desktop_user=$(gum input --placeholder "Alphanumeric without spaces (like dhh)" --header "Username for the installed desktop")
+    if [[ -z $desktop_user ]]; then
+      retry "username is required"
+      continue
+    fi
+    if [[ ! $desktop_user =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+      retry "username must be alphanumeric without spaces (like dhh)"
+      continue
+    fi
+    if [[ $desktop_user =~ $reserved ]]; then
+      retry "username $desktop_user is reserved"
+      continue
+    fi
+    break
+  done
+  while true; do
+    desktop_pass=$(gum input --password --placeholder "Used for the desktop user" --header "Password")
+    if [[ -z $desktop_pass ]]; then
+      retry "password is required"
+      continue
+    fi
+    pass2=$(gum input --password --placeholder "Must match the password you just typed" --header "Confirm password")
+    if [[ $desktop_pass != "$pass2" ]]; then
+      retry "passwords do not match — try again"
+      continue
+    fi
+    break
+  done
+  ask_hostname
+}
+
+# Same rules as install/provisioning/setup-form.sh. Empty → omarchy.
+ask_hostname() {
+  local name
+  while true; do
+    name=$(gum input --placeholder "Letters, digits, and dashes (or return for 'omarchy')" --header "Hostname")
+    if [[ -z $name ]]; then
+      desktop_hostname=omarchy
+      return 0
+    fi
+    if [[ $name =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
+      desktop_hostname=$name
+      return 0
+    fi
+    retry "hostname must be 1-63 letters, digits, or dashes"
+  done
+}
+
+write_installed_hostname() {
+  local root_mnt=$1
+  printf '%s\n' "$desktop_hostname" >"$root_mnt/etc/hostname"
+  cat >"$root_mnt/etc/hosts" <<EOF
+127.0.0.1 localhost
+::1 localhost
+127.0.1.1 $desktop_hostname
+EOF
+}
+
+# Sets encrypt_root=1 when the user keeps the default. Same password as
+# the desktop user. Caller must have asked for that password already.
+ask_encrypt_root() {
+  encrypt_root=0
+  if gum confirm --default --affirmative "Encrypt" --negative "No encryption" \
+    "Encrypt the disk? Recommended. Same password as the desktop user."; then
+    encrypt_root=1
+    command -v cryptsetup >/dev/null \
+      || fail "cryptsetup not found — rebuild with --usb --rootfs"
+  fi
+}
+
+# Same review as the x86 ISO configurator: table of every choice, then
+# "Does this look right?" No, change it re-asks user + encryption.
+confirm_install_choices() {
+  local action_label=$1 target_label=$2
+  local stars encrypt_label
+  while true; do
+    stars=$(printf '%*s' "${#desktop_pass}" '' | tr ' ' '*')
+    if (( encrypt_root == 1 )); then
+      encrypt_label="Yes (same password)"
+    else
+      encrypt_label="No"
+    fi
+    echo
+    printf 'Field,Value\nAction,%s\nTarget,%s\nUsername,%s\nPassword,%s\nHostname,%s\nEncryption,%s\n' \
+      "$action_label" "$target_label" "$desktop_user" "$stars" "$desktop_hostname" "$encrypt_label" |
+      gum table -s "," -p
+    echo
+    if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
+      printf 'dry-run: Does this look right? user=%s host=%s encrypt=%s target=%s\n' \
+        "$desktop_user" "$desktop_hostname" "$encrypt_label" "$target_label"
+      return 0
+    fi
+    if gum confirm --affirmative "Yes, install" --negative "No, change it" \
+      "Does this look right?"; then
+      return 0
+    fi
+    ask_desktop_user
+    ask_encrypt_root
+  done
+}
+
+# Live payload @ (used files). Prefer the overlay lowerdir so tmpfs
+# writes from the live session are not copied.
+live_payload_mount() {
+  if [[ -d /run/omarchy-root && -e /run/omarchy-root/omarchy-mac-live-ok ]]; then
+    printf '%s\n' /run/omarchy-root
+    return 0
+  fi
+  local mnt
+  mnt=$(findmnt -n -o TARGET "$live_partition" 2>/dev/null | awk 'NR==1 { print }')
+  if [[ -n $mnt && -e $mnt/omarchy-mac-live-ok ]]; then
+    printf '%s\n' "$mnt"
+    return 0
+  fi
+  return 1
+}
+
+# Used size of the live tree, not the 8GiB payload partition.
+live_payload_used_bytes() {
+  local src bytes
+  src=$(live_payload_mount) || fail "live payload @ is not mounted"
+  bytes=$(du -sb "$src" | awk '{ print $1 }')
+  [[ $bytes =~ ^[0-9]+$ ]] || fail "could not measure live tree size"
+  printf '%s\n' "$bytes"
+}
+
+# Fresh btrfs with @ / @home / @log. Mounts @ on $2.
+format_installed_btrfs() {
+  local root_dev=$1 root_mnt=$2 top
+  printf '==> mkfs.btrfs %s (OMARCHYROOT)\n' "$root_dev"
+  wipefs -a "$root_dev" >/dev/null 2>&1 || true
+  mkfs.btrfs -q -L OMARCHYROOT --csum crc32c "$root_dev"
+  top=$(mktemp -d)
+  mount "$root_dev" "$top"
+  btrfs subvolume create "$top/@" >/dev/null
+  btrfs subvolume create "$top/@home" >/dev/null
+  btrfs subvolume create "$top/@log" >/dev/null
+  umount "$top"
+  rmdir "$top"
+  mount -o subvol=@ "$root_dev" "$root_mnt"
+}
+
+# Copy used files only. Not a dd of empty payload space.
+copy_live_payload() {
+  local dest=$1 src
+  src=$(live_payload_mount) || fail "live payload @ is not mounted"
+  printf '==> copying %s of live tree onto the new root\n' "$(du -sh "$src" | cut -f1)"
+  tar -C "$src" --one-file-system --xattrs --acls --numeric-owner \
+    --exclude='./etc/pacman.d/gnupg/S.*' --warning=no-file-ignored -cf - . \
+    | tar -C "$dest" --xattrs --acls --numeric-owner --warning=no-file-ignored -xf -
+  sync
 }
 
 # Same default as install/user/theme.sh. Seed at install so the first
@@ -319,6 +466,7 @@ seed_tokyo_night() {
 
   if chroot "$root_mnt" runuser -u "$user" -- env \
       HOME=/home/"$user" USER="$user" LOGNAME="$user" \
+      XDG_RUNTIME_DIR=/tmp \
       OMARCHY_PATH=/usr/share/omarchy \
       OMARCHY_SETUP_CONTEXT=iso-chroot \
       OMARCHY_THEME_HEADLESS=1 \
@@ -402,30 +550,19 @@ install_persistent_root() {
   require_graphical_payload
   ask_desktop_user
 
-  payload_bytes=$(lsblk -dn -b -o SIZE "$live_partition")
+  payload_bytes=$(live_payload_used_bytes)
   min_bytes=$(( ESP_MIB * 1024 * 1024 + payload_bytes + 64 * 1024 * 1024 ))
   pick_target_disk "$min_bytes"
-  printf '==> confirm DESTROY of %s (arrow keys, then enter)\n' "$target_dev"
-  gum confirm \
-    "DESTROY $target_dev (${choice#*  }) and install a persistent USB root (no overlay)?" \
-    || fail "cancelled"
-  printf '==> confirmed\n'
-  if gum confirm --default --affirmative "Encrypt" --negative "No encryption" \
-    "Encrypt the disk? Recommended. Same password as the desktop user."; then
-    encrypt_root=1
-    command -v cryptsetup >/dev/null \
-      || fail "cryptsetup not found — rebuild with --usb --rootfs"
-  fi
+  ask_encrypt_root
+  confirm_install_choices "Wipe USB and install" \
+    "$target_dev ($(lsblk -dn -o SIZE "$target_dev")) — DESTROY every partition"
 
   mark_install_start
   source_esp=$(esp_partition_on "$live_disk" || true)
   [[ -n $source_esp ]] || fail "no ESP on the live USB $source_dev"
 
   unmount_disk "$target_dev"
-  if (( running_from_this_live_usb == 1 )); then
-    unmount_disk "$source_dev" 1
-  fi
-  sync
+  # Keep the live payload mounted; we copy files, not dd the block device.
 
   printf '==> partitioning %s (512MiB ESP + btrfs root)\n' "$target_dev"
   wipefs -a "$target_dev" 2>/dev/null || true
@@ -446,34 +583,18 @@ install_persistent_root() {
   root_dev=$root_part
   if (( encrypt_root == 1 )); then
     printf '==> luksFormat %s\n' "$root_part"
-    printf '%s' "$desktop_pass" | cryptsetup luksFormat --type luks2 --batch-mode --key-file=- "$root_part"
+    printf '%s' "$desktop_pass" | cryptsetup luksFormat --type luks2 --label OMARCHYROOT --batch-mode --key-file=- "$root_part"
     printf '%s' "$desktop_pass" | cryptsetup open --key-file=- "$root_part" root
     root_dev=/dev/mapper/root
     luks_uuid=$(blkid -s UUID -o value "$root_part")
     [[ -n $luks_uuid ]] || fail "no UUID on LUKS container $root_part"
   fi
 
-  printf '==> copying payload %s -> %s\n' "$live_partition" "$root_dev"
-  dd if="$live_partition" of="$root_dev" bs=4M status=progress conv=fsync oflag=sync
-  sync
-  partprobe "$target_dev" 2>/dev/null || true
-  command -v udevadm >/dev/null && udevadm settle --timeout=5 || true
-
   root_mnt=$(mktemp -d)
-  mount -o subvol=@ "$root_dev" "$root_mnt"
-  printf '==> btrfs resize max on %s\n' "$root_dev"
-  btrfs filesystem resize max "$root_mnt"
-  btrfs filesystem label "$root_mnt" OMARCHYROOT
-  umount "$root_mnt"
-
-  if command -v btrfs >/dev/null; then
-    btrfs device scan --forget "$root_dev" || true
-  fi
-  btrfstune -f -u "$root_dev"
-  mount -o subvol=@ "$root_dev" "$root_mnt"
-
+  format_installed_btrfs "$root_dev" "$root_mnt"
+  copy_live_payload "$root_mnt"
   root_uuid=$(blkid -s UUID -o value "$root_dev")
-  [[ -n $root_uuid ]] || fail "no UUID on $root_dev after btrfstune"
+  [[ -n $root_uuid ]] || fail "no UUID on $root_dev"
 
   printf 'UUID=%s / btrfs subvol=@,compress=zstd:1 0 0\n' "$root_uuid" >"$root_mnt/etc/fstab"
   printf 'UUID=%s /home btrfs subvol=@home,compress=zstd:1 0 0\n' "$root_uuid" >>"$root_mnt/etc/fstab"
@@ -481,7 +602,7 @@ install_persistent_root() {
   if (( encrypt_root == 1 )); then
     printf 'root UUID=%s none luks,discard,x-initrd.attach\n' "$luks_uuid" >"$root_mnt/etc/crypttab"
   fi
-  printf 'omarchy-mac\n' >"$root_mnt/etc/hostname"
+  write_installed_hostname "$root_mnt"
   cat >"$root_mnt/etc/issue" <<'EOF'
 Omarchy Mac (installed). SDDM autologin.
 EOF
@@ -570,7 +691,7 @@ EOF
 # or own (UEFI-only: write BOOTAA64.EFI). Never touches m1n1/vendorfw/asahi.
 # Prints "piggyback" or "own" to stdout. Caller holds the root mount.
 apply_system_esp_bootloader() {
-  local esp_part=$1 root_uuid=$2 source_esp=$3
+  local esp_part=$1 root_uuid=$2 source_esp=$3 luks_uuid=${4:-}
   local esp_mnt live_esp_mnt
   local esp_mounted_by_us=0 live_esp_mounted_by_us=0
   local before_efi after_efi before_prot after_prot
@@ -603,14 +724,14 @@ apply_system_esp_bootloader() {
   fi
 
   if esp_has_bootloader "$esp_mnt"; then
-    write_piggyback_esp_grub "$esp_mnt" "$root_uuid"
+    write_piggyback_esp_grub "$esp_mnt" "$root_uuid" "$luks_uuid"
     after_efi=$(sha256sum "$esp_mnt/EFI/BOOT/BOOTAA64.EFI" 2>/dev/null || true)
     [[ $before_efi == "$after_efi" ]] || fail "BOOTAA64.EFI changed — aborting"
     mode=piggyback
   else
     command -v grub-mkstandalone >/dev/null \
       || fail "grub-mkstandalone not found — rebuild with --usb --rootfs (grub)"
-    write_owned_esp_grub "$esp_mnt" "$root_uuid" "$embed_cfg" \
+    write_owned_esp_grub "$esp_mnt" "$root_uuid" "$embed_cfg" "$luks_uuid" \
       || fail "could not write System ESP GRUB"
     [[ -f $esp_mnt/EFI/BOOT/BOOTAA64.EFI ]] || fail "BOOTAA64.EFI missing after own-mode write"
     [[ -f $esp_mnt/omarchy-mac-root ]] || fail "omarchy-mac-root marker missing"
@@ -631,16 +752,16 @@ install_into_free_space() {
   local payload_bytes min_bytes name size model tran bytes
   local hole_start hole_size hole_end
   local before_names before_apple backup
-  local root_part root_mnt esp_part
-  local root_uuid esp_uuid
-  local payload_mnt esp_mode
+  local root_part root_dev root_mnt esp_part
+  local root_uuid esp_uuid luks_uuid=""
+  local esp_mode encrypt_root=0
   local created_parts=()
 
   command -v parted >/dev/null || fail "parted not found"
   require_graphical_payload
   ask_desktop_user
 
-  payload_bytes=$(lsblk -dn -b -o SIZE "$live_partition")
+  payload_bytes=$(live_payload_used_bytes)
   min_bytes=$(( payload_bytes + 64 * 1024 * 1024 ))
   min_mib=$(( (min_bytes + 1024 * 1024 - 1) / (1024 * 1024) ))
 
@@ -676,10 +797,9 @@ install_into_free_space() {
 
   printf '==> selected %s hole %sMiB-%sMiB (%sMiB)\n' \
     "$target_dev" "$hole_start" "$hole_end" "$hole_size"
-  printf '==> confirm (arrow keys, then enter)\n'
-  gum confirm \
-    "Create ONE new partition on $target_dev from ${hole_start}MiB to ${hole_end}MiB. APFS/iBoot/Recovery and all existing partitions stay. No mklabel, no LUKS. Continue?" \
-    || fail "cancelled"
+  ask_encrypt_root
+  confirm_install_choices "Install into free space" \
+    "$target_dev ${hole_start}MiB-${hole_end}MiB — existing partitions stay"
 
   if disk_has_apple_partitions "$target_name" || disk_is_nvme "$target_name"; then
     [[ -z ${OMARCHY_INSTALL_DRY_RUN:-} ]] || true
@@ -688,6 +808,7 @@ install_into_free_space() {
   if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
     printf 'dry-run: parted %s mkpart root btrfs %sMiB %sMiB\n' \
       "$target_dev" "$hole_start" "$hole_end"
+    (( encrypt_root == 1 )) && printf 'dry-run: luksFormat the new partition\n'
     printf 'dry-run: would NOT mklabel or wipefs\n'
     return 0
   fi
@@ -697,14 +818,6 @@ install_into_free_space() {
   [[ -n $source_esp ]] || fail "no ESP on the live USB $source_dev"
   esp_part=$(existing_esp_on "$target_name" || true)
   [[ -n $esp_part ]] || fail "$target_dev has no ESP; will not create one next to APFS"
-
-  # Do not dd a mounted payload (btrfs csum corruption). Overlay lowerdir stays.
-  if (( running_from_this_live_usb != 1 )); then
-    payload_mnt=$(findmnt -n -o TARGET "$live_partition" || true)
-    if [[ -n $payload_mnt ]]; then
-      umount "$payload_mnt" || fail "could not unmount $payload_mnt before dd"
-    fi
-  fi
 
   backup=$(mktemp /tmp/omarchy-gpt-${target_name}.XXXXXX)
   if command -v sfdisk >/dev/null; then
@@ -745,52 +858,48 @@ install_into_free_space() {
   created_parts+=("$root_part")
   printf '==> new partition %s\n' "$root_part"
 
-  printf '==> copying payload %s -> %s\n' "$live_partition" "$root_part"
-  dd if="$live_partition" of="$root_part" bs=4M status=progress conv=fsync oflag=sync
-  sync
-  partprobe "$target_dev" 2>/dev/null || true
-  command -v udevadm >/dev/null && udevadm settle --timeout=5 || true
-
-  # dd copies the live UUID; udisks will remount it. Unique UUID first.
-  for _ in 1 2 3 4 5 6; do
-    m=$(findmnt -n -o TARGET "$root_part" || true)
-    [[ -z $m ]] && break
-    umount "$m" || umount -l "$m" || true
-    sleep 0.5
-  done
-  findmnt -n "$root_part" >/dev/null && fail "$root_part still mounted; cannot btrfstune"
-  if command -v btrfs >/dev/null; then
-    btrfs device scan --forget "$root_part" || true
+  root_dev=$root_part
+  if (( encrypt_root == 1 )); then
+    printf '==> luksFormat %s\n' "$root_part"
+    printf '%s' "$desktop_pass" | cryptsetup luksFormat --type luks2 --label OMARCHYROOT --batch-mode --key-file=- "$root_part"
+    printf '%s' "$desktop_pass" | cryptsetup open --key-file=- "$root_part" root
+    root_dev=/dev/mapper/root
+    luks_uuid=$(blkid -s UUID -o value "$root_part")
+    [[ -n $luks_uuid ]] || fail "no UUID on LUKS container $root_part"
   fi
-  btrfstune -f -u "$root_part"
 
   root_mnt=$(mktemp -d)
-  mount -o subvol=@ "$root_part" "$root_mnt"
-  btrfs filesystem resize max "$root_mnt"
-  btrfs filesystem label "$root_mnt" OMARCHYROOT
-  root_uuid=$(blkid -s UUID -o value "$root_part")
-  [[ -n $root_uuid ]] || fail "no UUID on $root_part"
+  format_installed_btrfs "$root_dev" "$root_mnt"
+  copy_live_payload "$root_mnt"
+  root_uuid=$(blkid -s UUID -o value "$root_dev")
+  [[ -n $root_uuid ]] || fail "no UUID on $root_dev"
 
   printf 'UUID=%s / btrfs subvol=@,compress=zstd:1 0 0\n' "$root_uuid" >"$root_mnt/etc/fstab"
   printf 'UUID=%s /home btrfs subvol=@home,compress=zstd:1 0 0\n' "$root_uuid" >>"$root_mnt/etc/fstab"
   printf 'UUID=%s /var/log btrfs subvol=@log,compress=zstd:1 0 0\n' "$root_uuid" >>"$root_mnt/etc/fstab"
-  printf 'omarchy-mac\n' >"$root_mnt/etc/hostname"
+  if (( encrypt_root == 1 )); then
+    printf 'root UUID=%s none luks,discard,x-initrd.attach\n' "$luks_uuid" >"$root_mnt/etc/crypttab"
+  fi
+  write_installed_hostname "$root_mnt"
   cat >"$root_mnt/etc/issue" <<'EOF'
 Omarchy Mac (installed). SDDM autologin.
 EOF
   rm -f "$root_mnt/omarchy-mac-overlay-write"
   : >"$root_mnt/etc/machine-id"
 
-  esp_mode=$(apply_system_esp_bootloader "$esp_part" "$root_uuid" "$source_esp")
+  esp_mode=$(apply_system_esp_bootloader "$esp_part" "$root_uuid" "$source_esp" "$luks_uuid")
 
   esp_uuid=$(blkid -s UUID -o value "$esp_part")
   printf 'UUID=%s /boot vfat defaults,fmask=0133,dmask=0022 0 2\n' "$esp_uuid" >>"$root_mnt/etc/fstab"
 
-  personalize_graphical_session "$root_mnt" "$root_part"
+  personalize_graphical_session "$root_mnt" "$root_dev"
 
   sync
   umount "$root_mnt"
   rmdir "$root_mnt" 2>/dev/null || true
+  if (( encrypt_root == 1 )); then
+    cryptsetup close root
+  fi
 
   printf '==> done. Did not mklabel %s. New root %s UUID=%s\n' \
     "$target_dev" "$root_part" "$root_uuid"
@@ -808,14 +917,16 @@ EOF
 # partition node so two roots (NVMe hole vs USB stick) cannot be confused.
 existing_root_row() {
   local root_part=$1
-  local disk size model where
+  local disk size model where fstype extra=""
   disk=$(lsblk -no PKNAME "$root_part")
   size=$(lsblk -dn -o SIZE "$root_part")
   model=$(lsblk -dn -o MODEL "/dev/$disk" | tr -s ' ')
+  fstype=$(lsblk -dn -o FSTYPE "$root_part")
+  [[ $fstype == crypto_LUKS ]] && extra="encrypted, "
   if disk_is_nvme "$disk"; then
-    where="internal NVMe — other partitions stay"
+    where="internal NVMe — ${extra}other partitions stay"
   else
-    where="USB stick — ${model:-usb}"
+    where="USB stick — ${extra}${model:-usb}"
   fi
   printf '%s  %s  %s\n' "$root_part" "$size" "$where"
 }
@@ -824,31 +935,36 @@ existing_root_row() {
 # no wipefs of the disk. The 46G NVMe hole (p7) is this path: the GPT gap
 # is already a partition, so free-space install would find nothing.
 install_over_existing_root() {
-  local name size
+  local name size bytes found_any=0
   local candidates=()
-  local source_esp esp_part root_part root_mnt
-  local root_uuid esp_uuid payload_bytes payload_mnt
-  local before_apple after_apple backup m esp_mode
+  local source_esp esp_part root_part root_dev root_mnt
+  local root_uuid esp_uuid luks_uuid="" payload_bytes
+  local before_apple after_apple backup m esp_mode encrypt_root=0
 
   command -v parted >/dev/null || fail "parted not found"
   require_graphical_payload
 
-  payload_bytes=$(lsblk -dn -b -o SIZE "$live_partition")
+  payload_bytes=$(live_payload_used_bytes)
   source_esp=$(esp_partition_on "$live_disk" || true)
   [[ -n $source_esp ]] || fail "no ESP on the live USB $source_dev"
 
+  found_any=0
   while read -r name; do
     [[ $name == "$live_disk" ]] && continue
     existing_esp_on "$name" >/dev/null || continue
     root_part=$(existing_omarchy_root_on "$name" || true)
     [[ -n $root_part ]] || continue
     [[ $root_part == "$live_partition" ]] && continue
+    found_any=1
     bytes=$(lsblk -dn -b -o SIZE "$root_part")
     (( bytes >= payload_bytes + 64 * 1024 * 1024 )) || continue
     candidates+=("$(existing_root_row "$root_part")")
   done < <(lsblk -dn -o NAME)
 
-  (( ${#candidates[@]} > 0 )) || fail "no existing OMARCHYROOT is large enough (need payload + 64MiB). Install into free space first, or pick a bigger partition."
+  if (( found_any == 0 )); then
+    fail "no existing Omarchy root found (btrfs OMARCHYROOT or an encrypted root). Install into free space first."
+  fi
+  (( ${#candidates[@]} > 0 )) || fail "no existing Omarchy root is large enough (need the live tree + 64MiB)."
 
   choice=$(printf '%s\n' "${candidates[@]}" | gum choose --header "Which Omarchy root partition should be replaced? Not the ESP.")
   [[ -n $choice ]] || fail "cancelled"
@@ -863,25 +979,19 @@ install_over_existing_root() {
 
   printf '==> selected %s on %s (%s)\n' "$root_part" "$target_dev" "$size"
   ask_desktop_user
-  printf '==> confirm (arrow keys, then enter)\n'
-  gum confirm \
-    "Replace ONLY $root_part ($size) on $target_dev. Not the ESP. Other partitions stay. No mklabel, no mkpart, no LUKS. Continue?" \
-    || fail "cancelled"
+  ask_encrypt_root
+  confirm_install_choices "Replace existing Omarchy root" \
+    "$root_part ($size) on $target_dev — ESP and other partitions stay"
 
   if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
-    printf 'dry-run: dd %s -> %s then btrfstune -u (no mkpart, no mklabel)\n' \
-      "$live_partition" "$root_part"
+    printf 'dry-run: format %s and copy the live tree (no mkpart, no mklabel)\n' \
+      "$root_part"
+    (( encrypt_root == 1 )) && printf 'dry-run: luksFormat %s first\n' "$root_part"
     printf 'dry-run: would NOT mklabel, mkpart, or wipefs\n'
     return 0
   fi
 
   mark_install_start
-  if (( running_from_this_live_usb != 1 )); then
-    payload_mnt=$(findmnt -n -o TARGET "$live_partition" || true)
-    if [[ -n $payload_mnt ]]; then
-      umount "$payload_mnt" || fail "could not unmount $payload_mnt before dd"
-    fi
-  fi
 
   backup=$(mktemp /tmp/omarchy-gpt-${target_name}.XXXXXX)
   if command -v sfdisk >/dev/null; then
@@ -896,13 +1006,17 @@ install_over_existing_root() {
     umount "$m" || umount -l "$m" || true
     sleep 0.5
   done
-  findmnt -n "$root_part" >/dev/null && fail "$root_part still mounted; cannot dd"
+  findmnt -n "$root_part" >/dev/null && fail "$root_part still mounted; cannot format"
 
-  printf '==> copying payload %s -> %s\n' "$live_partition" "$root_part"
-  dd if="$live_partition" of="$root_part" bs=4M status=progress conv=fsync oflag=sync
-  sync
-  partprobe "$target_dev" 2>/dev/null || true
-  command -v udevadm >/dev/null && udevadm settle --timeout=5 || true
+  root_dev=$root_part
+  if (( encrypt_root == 1 )); then
+    printf '==> luksFormat %s\n' "$root_part"
+    printf '%s' "$desktop_pass" | cryptsetup luksFormat --type luks2 --label OMARCHYROOT --batch-mode --key-file=- "$root_part"
+    printf '%s' "$desktop_pass" | cryptsetup open --key-file=- "$root_part" root
+    root_dev=/dev/mapper/root
+    luks_uuid=$(blkid -s UUID -o value "$root_part")
+    [[ -n $luks_uuid ]] || fail "no UUID on LUKS container $root_part"
+  fi
 
   after_apple=$(apple_partition_snapshot "$target_dev")
   if [[ $before_apple != "$after_apple" ]]; then
@@ -911,45 +1025,38 @@ install_over_existing_root() {
     exit 1
   fi
 
-  for _ in 1 2 3 4 5 6; do
-    m=$(findmnt -n -o TARGET "$root_part" || true)
-    [[ -z $m ]] && break
-    umount "$m" || umount -l "$m" || true
-    sleep 0.5
-  done
-  findmnt -n "$root_part" >/dev/null && fail "$root_part still mounted; cannot btrfstune"
-  if command -v btrfs >/dev/null; then
-    btrfs device scan --forget "$root_part" || true
-  fi
-  btrfstune -f -u "$root_part"
-
   root_mnt=$(mktemp -d)
-  mount -o subvol=@ "$root_part" "$root_mnt"
-  btrfs filesystem resize max "$root_mnt"
-  btrfs filesystem label "$root_mnt" OMARCHYROOT
-  root_uuid=$(blkid -s UUID -o value "$root_part")
-  [[ -n $root_uuid ]] || fail "no UUID on $root_part"
+  format_installed_btrfs "$root_dev" "$root_mnt"
+  copy_live_payload "$root_mnt"
+  root_uuid=$(blkid -s UUID -o value "$root_dev")
+  [[ -n $root_uuid ]] || fail "no UUID on $root_dev"
 
   printf 'UUID=%s / btrfs subvol=@,compress=zstd:1 0 0\n' "$root_uuid" >"$root_mnt/etc/fstab"
   printf 'UUID=%s /home btrfs subvol=@home,compress=zstd:1 0 0\n' "$root_uuid" >>"$root_mnt/etc/fstab"
   printf 'UUID=%s /var/log btrfs subvol=@log,compress=zstd:1 0 0\n' "$root_uuid" >>"$root_mnt/etc/fstab"
-  printf 'omarchy-mac\n' >"$root_mnt/etc/hostname"
+  if (( encrypt_root == 1 )); then
+    printf 'root UUID=%s none luks,discard,x-initrd.attach\n' "$luks_uuid" >"$root_mnt/etc/crypttab"
+  fi
+  write_installed_hostname "$root_mnt"
   cat >"$root_mnt/etc/issue" <<'EOF'
 Omarchy Mac (installed). SDDM autologin.
 EOF
   rm -f "$root_mnt/omarchy-mac-overlay-write"
   : >"$root_mnt/etc/machine-id"
 
-  esp_mode=$(apply_system_esp_bootloader "$esp_part" "$root_uuid" "$source_esp")
+  esp_mode=$(apply_system_esp_bootloader "$esp_part" "$root_uuid" "$source_esp" "$luks_uuid")
 
   esp_uuid=$(blkid -s UUID -o value "$esp_part")
   printf 'UUID=%s /boot vfat defaults,fmask=0133,dmask=0022 0 2\n' "$esp_uuid" >>"$root_mnt/etc/fstab"
 
-  personalize_graphical_session "$root_mnt" "$root_part"
+  personalize_graphical_session "$root_mnt" "$root_dev"
 
   sync
   umount "$root_mnt"
   rmdir "$root_mnt" 2>/dev/null || true
+  if (( encrypt_root == 1 )); then
+    cryptsetup close root
+  fi
 
   printf '==> done. Did not mklabel or mkpart %s. Replaced %s UUID=%s\n' \
     "$target_dev" "$root_part" "$root_uuid"
@@ -978,10 +1085,11 @@ install_grub_for_existing_root() {
     existing_esp_on "$name" >/dev/null || continue
     root_part=$(existing_omarchy_root_on "$name" || true)
     [[ -n $root_part ]] || continue
+    [[ $(lsblk -dn -o FSTYPE "$root_part") == crypto_LUKS ]] && continue
     candidates+=("$(existing_root_row "$root_part")")
   done < <(lsblk -dn -o NAME)
 
-  (( ${#candidates[@]} > 0 )) || fail "no disk has both an ESP and an OMARCHYROOT (install into free space first)"
+  (( ${#candidates[@]} > 0 )) || fail "no unencrypted Omarchy root found. Reinstall an encrypted root, or install into free space first."
 
   choice=$(printf '%s\n' "${candidates[@]}" | gum choose --header "Write GRUB for which Omarchy root? Filesystem stays.")
   [[ -n $choice ]] || fail "cancelled"
