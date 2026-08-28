@@ -148,6 +148,12 @@ cp -a "/usr/lib/modules/$kver" "$mnt/usr/lib/modules/"
 
 install -m644 "$repo_root/configs/usb/rootfs/issue" "$mnt/etc/issue"
 install -d "$mnt/etc/systemd/system"
+install -d "$mnt/etc/systemd/system.conf.d"
+install -m644 "$repo_root/configs/usb/rootfs/systemd-show-status.conf" \
+  "$mnt/etc/systemd/system.conf.d/show-status.conf"
+install -d "$mnt/etc/sysctl.d"
+install -m644 "$repo_root/configs/usb/rootfs/sysctl-quiet-console.conf" \
+  "$mnt/etc/sysctl.d/90-omarchy-quiet-console.conf"
 install -d "$mnt/usr/local/sbin"
 install -d "$mnt/usr/local/share/omarchy-mac-iso"
 install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-install" \
@@ -208,9 +214,12 @@ install -m644 "$repo_root/configs/usb/modprobe.d/asahi-notch.conf" \
   "$mnt/etc/modprobe.d/asahi-notch.conf"
 install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-asahi-hw.service" \
   "$mnt/etc/systemd/system/omarchy-mac-asahi-hw.service"
+install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-quiet-console.service" \
+  "$mnt/etc/systemd/system/omarchy-mac-quiet-console.service"
 
 systemctl --root="$mnt" enable omarchy-mac-usb-ready.service
 systemctl --root="$mnt" enable omarchy-mac-asahi-hw.service
+systemctl --root="$mnt" enable omarchy-mac-quiet-console.service
 systemctl --root="$mnt" enable NetworkManager.service
 systemctl --root="$mnt" enable speakersafetyd.service
 systemctl --root="$mnt" --global enable pipewire.socket pipewire-pulse.socket wireplumber.service 2>/dev/null || true

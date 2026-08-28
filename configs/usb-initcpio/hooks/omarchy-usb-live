@@ -71,8 +71,8 @@ run_hook() {
     hang "omarchy-usb-live: busybox is a symlink (switch_root would ENOENT)"
   fi
 
-  echo "==> OMARCHY_MAC_USB_READY" >/dev/console
-  echo "==> OMARCHY_MAC_USB_READY payload=$payload_dev marker=$(cat "$LIVE_MOUNT/$MARKER" 2>/dev/null)"
+  dmesg -n 1 >/dev/null 2>&1 || true
+  echo "1 4 1 3" >/proc/sys/kernel/printk 2>/dev/null || true
 
   # Asahi vendor firmware was extracted from the internal ESP by the asahi
   # hook. Carry it across switch_root so brcmfmac can associate in userspace.
@@ -91,7 +91,6 @@ run_hook() {
   mount --move /dev "$NEW_ROOT/dev" 2>/dev/null || mount --bind /dev "$NEW_ROOT/dev"
   mount --move /run "$NEW_ROOT/run" 2>/dev/null || true
 
-  echo "==> omarchy-usb-live: switch_root $NEW_ROOT /sbin/init" >/dev/console
   exec switch_root "$NEW_ROOT" /sbin/init
 
   hang "omarchy-usb-live: switch_root returned"

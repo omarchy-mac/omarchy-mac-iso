@@ -97,7 +97,9 @@ check "install script refuses Apple partition GUIDs" grep -q 7c3457ef \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-disk.sh"
 check "install script copies through last partition not whole disk" grep -q iflag=count_bytes \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
-check "install script unmounts the live USB before dd" grep -q 'unmount_disk "$source_dev"' \
+check "clone unmounts the live USB before dd" grep -q 'unmount_disk "$source_dev"' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "clone still dd's the live USB through last partition" grep -q 'dd if="$source_dev"' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "install script keeps overlay lowerdir mounted" grep -q omarchy-mac-overlay-write \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
@@ -113,7 +115,13 @@ check "session file is looked up in usr/local/share" grep -q \
 check "graphical payload is required before wipefs" \
   bash -c 'awk "/^install_persistent_root\\(\\)/,/wipefs/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q require_graphical_payload'
 check "desktop user is asked before the payload copy" \
-  bash -c 'awk "/^install_persistent_root\\(\\)/,/copying payload/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q ask_desktop_user'
+  bash -c 'awk "/^install_persistent_root\\(\\)/,/copy_live_payload/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q ask_desktop_user'
+check "wipe-USB copies the live tree" \
+  bash -c 'awk "/^install_persistent_root\\(\\)/,/^apply_system_esp_bootloader/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q copy_live_payload'
+check "wipe-USB does not dd the live payload" \
+  bash -c '! awk "/^install_persistent_root\\(\\)/,/^apply_system_esp_bootloader/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q "dd if="'
+check "wipe-USB sizes the copy from used files" \
+  bash -c 'awk "/^install_persistent_root\\(\\)/,/^apply_system_esp_bootloader/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q live_payload_used_bytes'
 check "install initrd can come from a wipe-installed USB ESP" grep -q \
   'initramfs-omarchy-usb-root.img ]]; then' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
@@ -122,6 +130,12 @@ check "installed root uses graphical.target" grep -q 'set-default graphical.targ
 check "installed root creates a desktop user on @home" grep -q 'subvol=@home' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "installed root seeds Tokyo Night" grep -q 'omarchy-theme-set "Tokyo Night"' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "theme seed locks under /tmp in the chroot" grep -q 'XDG_RUNTIME_DIR=/tmp' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "payload copy skips pacman gnupg sockets" grep -q "exclude='./etc/pacman.d/gnupg/S.*'" \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "payload copy does not warn about ignored sockets" grep -q -- --warning=no-file-ignored \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "installed USB GRUB uses quiet splash" grep -q 'loglevel=3 quiet splash' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
@@ -135,6 +149,12 @@ check "install script offers free-space install" grep -q 'Install into free spac
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "free-space install does not wipefs" \
   bash -c 'awk "/^install_into_free_space\\(\\)/,/^action=/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -qv wipefs'
+check "free-space copies the live tree" \
+  bash -c 'awk "/^install_into_free_space\\(\\)/,/^existing_root_row/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q copy_live_payload'
+check "free-space does not dd the live payload" \
+  bash -c '! awk "/^install_into_free_space\\(\\)/,/^existing_root_row/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q "dd if="'
+check "free-space sizes the copy from used files" \
+  bash -c 'awk "/^install_into_free_space\\(\\)/,/^existing_root_row/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q live_payload_used_bytes'
 check "install script offers reinstall existing Omarchy root" grep -q \
   'Reinstall an existing Omarchy root' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
@@ -143,16 +163,41 @@ check "reinstall picker names the partition first" grep -q 'existing_root_row' \
 check "reinstall picker distinguishes internal NVMe from USB" grep -q \
   'internal NVMe' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
-check "live GRUB quiets console kmsg" grep -q 'loglevel=3 quiet' \
+check "live GRUB quiets console kmsg" grep -q 'quiet loglevel=0' \
   "${repo_root}/configs/usb/grub.cfg"
+check "live GRUB hides systemd boot status" grep -q 'systemd.show_status=0' \
+  "${repo_root}/configs/usb/grub.cfg"
+check "live GRUB hides systemd status in the initrd" grep -q 'rd.systemd.show_status=0' \
+  "${repo_root}/configs/usb/grub.cfg"
+check "live GRUB masks plymouth on the installer USB" grep -q \
+  'systemd.mask=plymouth-start.service' \
+  "${repo_root}/configs/usb/grub.cfg"
+check "refresh-live rebuilds the live initramfs" grep -q \
+  initramfs-omarchy-usb.img \
+  "${repo_root}/bin/omarchy-mac-iso-refresh-live"
+check "live hook quiets printk before switch_root" grep -q 'dmesg -n 1' \
+  "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-live"
+check "live rootfs hides systemd boot status" grep -q 'ShowStatus=no' \
+  "${repo_root}/configs/usb/rootfs/systemd-show-status.conf"
+check "refresh-live copies the systemd quiet drop-in" grep -q \
+  'system.conf.d/show-status.conf' \
+  "${repo_root}/bin/omarchy-mac-iso-refresh-live"
+check "live rootfs quiets firmware printk" grep -q 'kernel.printk' \
+  "${repo_root}/configs/usb/rootfs/sysctl-quiet-console.conf"
 check "replace existing root does not mkpart or mklabel" \
   bash -c '! awk "/^install_over_existing_root\\(\\)/,/^install_grub_for_existing_root/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -qE "wipefs -a|mklabel gpt|[[:space:]]mkpart root"'
-check "replace existing root asks the desktop user before dd" \
-  bash -c 'awk "/^install_over_existing_root\\(\\)/,/copying payload/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q ask_desktop_user'
+check "replace existing root asks the desktop user before copy" \
+  bash -c 'awk "/^install_over_existing_root\\(\\)/,/copy_live_payload/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q ask_desktop_user'
+check "replace existing copies the live tree" \
+  bash -c 'awk "/^install_over_existing_root\\(\\)/,/^install_grub_for_existing_root/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q copy_live_payload'
+check "replace existing does not dd the live payload" \
+  bash -c '! awk "/^install_over_existing_root\\(\\)/,/^install_grub_for_existing_root/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q "dd if="'
+check "replace existing sizes the copy from used files" \
+  bash -c 'awk "/^install_over_existing_root\\(\\)/,/^install_grub_for_existing_root/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q live_payload_used_bytes'
 check "replace existing root refuses the live payload" grep -q \
   'refusing to overwrite the live payload' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
-check "replace existing root checks Apple types after dd" \
+check "replace existing root checks Apple types after format" \
   bash -c 'awk "/^install_over_existing_root\\(\\)/,/^install_grub_for_existing_root/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q before_apple'
 check "sh -n omarchy-mac-disk.sh" bash -n \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-disk.sh"
@@ -179,6 +224,33 @@ check "install menu prints the Omarchy wordmark" grep -q logo.txt \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "live welcome execs the installer" grep -q 'exec omarchy-mac-install' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-live-welcome"
+check "install asks for a hostname" grep -q ask_hostname \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "hostname defaults to omarchy" grep -q 'desktop_hostname=omarchy' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "install reviews every choice before copying" grep -q 'Does this look right?' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "choice review can change user and encryption" grep -q 'No, change it' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "wipe-USB reviews choices before copy" \
+  bash -c 'awk "/^install_persistent_root\\(\\)/,/copy_live_payload/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q confirm_install_choices'
+check "free-space reviews choices before copy" \
+  bash -c 'awk "/^install_into_free_space\\(\\)/,/copy_live_payload/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q confirm_install_choices'
+check "replace existing reviews choices before copy" \
+  bash -c 'awk "/^install_over_existing_root\\(\\)/,/copy_live_payload/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q confirm_install_choices'
+check "password mismatch re-prompts instead of exiting" \
+  bash -c '! awk "/^ask_desktop_user\\(\\)/,/^ask_hostname/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q "fail \"passwords do not match\""'
+check "username validation re-prompts instead of exiting" \
+  bash -c '! awk "/^ask_desktop_user\\(\\)/,/^ask_hostname/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q "fail \"invalid username\""'
+check "hostname validation re-prompts instead of exiting" \
+  bash -c '! awk "/^ask_hostname\\(\\)/,/^write_installed_hostname/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q "fail \"hostname"'
+check "quiet console service runs before udev" grep -q 'Before=sysinit.target systemd-udevd.service' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-quiet-console.service"
+check "refresh-live enables the quiet console service" grep -q \
+  'enable omarchy-mac-quiet-console.service' \
+  "${repo_root}/bin/omarchy-mac-iso-refresh-live"
+check "install initrd ships asahi-notch.conf" grep -q asahi-notch.conf \
+  "${repo_root}/configs/usb-initcpio/install/omarchy-usb-wait"
 check "rootfs installs live welcome on tty1 autologin" grep -q omarchy-mac-live-welcome \
   "${repo_root}/builder/build-rootfs.sh"
 check "root bash_profile only runs welcome on tty1" grep -q '/dev/tty1' \
@@ -207,10 +279,25 @@ check "wipe-USB install can luksFormat" grep -q 'cryptsetup luksFormat' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "wipe-USB GRUB can pass cryptdevice" grep -q 'cryptdevice=UUID=' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
-check "free-space install does not luksFormat" \
-  bash -c '! awk "/^install_into_free_space\\(\\)/,/^install_over_existing_root/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q luksFormat'
-check "replace existing root does not luksFormat" \
-  bash -c '! awk "/^install_over_existing_root\\(\\)/,/^install_grub_for_existing_root/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q luksFormat'
+check "free-space install can luksFormat" \
+  bash -c 'awk "/^install_into_free_space\\(\\)/,/^existing_root_row/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q luksFormat'
+check "free-space GRUB can pass cryptdevice" grep -q root_linux_args \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
+check "replace existing root can luksFormat" \
+  bash -c 'awk "/^install_over_existing_root\\(\\)/,/^install_grub_for_existing_root/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q luksFormat'
+check "LUKS containers are labelled OMARCHYROOT" grep -q 'luksFormat --type luks2 --label OMARCHYROOT' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "replace existing finds an encrypted Omarchy root" grep -q 'fstype == crypto_LUKS' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
+check "encrypted Omarchy root is GPT name root or LUKS label" grep -q 'partlabel == root' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
+check "root probe does not combine lsblk --list and --pairs" \
+  bash -c '! grep -qE "lsblk -ln -P|lsblk -l -P" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-esp.sh"'
+check "root probe uses lsblk --pairs without --list" grep -q 'lsblk -n -P -o NAME,FSTYPE,LABEL,PARTLABEL' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
+check "replace existing says when no Omarchy root exists" grep -q \
+  'no existing Omarchy root found' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "rootfs extra packages include cryptsetup" grep -qx cryptsetup \
   "${repo_root}/configs/usb/rootfs/packages"
 check "install initramfs lists dwc3_apple" grep -q dwc3_apple \

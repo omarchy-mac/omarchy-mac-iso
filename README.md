@@ -1,104 +1,29 @@
 # Omarchy Mac ISO
 
-Install images for Omarchy on Apple Silicon. The shipped artifact is a
-GPT disk image (`.img`) with a FAT32 ESP, not an ISO9660 file — the
-repo name matches Omarchy's x86 ISO so people can find it.
+Install images for Omarchy on Apple Silicon. The shipped artifact is a GPT disk image (`.img`) with a FAT32 ESP, not an ISO9660 file — the repo name matches Omarchy's x86 ISO so people can find it.
 
-Destination design: [plans/apple-silicon-image.md](plans/apple-silicon-image.md).
-That is m1n1 → U-Boot → GRUB `BOOTAA64.EFI` → `linux-asahi` → a `root.img`
-payload, proven on an M2 Max. This repo owns the live boot environment and
-installer; [omarchy-mac](https://github.com/omarchy-mac/omarchy-mac) owns
-the installed system.
+This repo owns the live USB and installer. [omarchy-mac](https://github.com/omarchy-mac/omarchy-mac) owns the installed desktop. Destination design: [plans/apple-silicon-image.md](plans/apple-silicon-image.md). How to work in this tree: [AGENTS.md](AGENTS.md).
 
-Default branch is `main`. That is unrelated to `omarchy-mac`'s `main`
-(still v3.x); this tree has no v3 history.
+Default branch is `main`. That is unrelated to `omarchy-mac`'s `main` (still v3.x); this tree has no v3 history.
 
-## M0 — QEMU boot harness
-
-M0 proves a reproducible ARM64 build crosses a generic AArch64 UEFI
-boundary under QEMU, reaches Linux userspace, and emits a readiness
-signal. **It will not boot an Apple Silicon Mac.** There is no m1n1,
-U-Boot, Asahi kernel, or USB ESP in this artifact.
-
-```
-source
-  -> ./bin/omarchy-mac-iso-make
-  -> release/omarchy-mac-iso-arm64/{vmlinuz,initramfs.img}
-  -> ./bin/omarchy-mac-iso-boot
-  -> AArch64 UEFI (edk2) on QEMU virt
-  -> Linux kernel + initramfs
-  -> live userspace
-  -> "OMARCHY_MAC_ISO_READY" on the serial console
-```
-
-Alpine aarch64 and `linux-virt` are throwaway M0 content so the harness
-can run on a laptop without Asahi hardware or Docker. They are not the
-installer distribution. Do not grow the TUI, disk partitioning, or LUKS
-on top of this userspace — the next milestone replaces the payload with
-the GPT `.img` in the plan.
-
-## Requirements (M0)
-
-- macOS or Linux, x86_64 or aarch64
-- [`qemu`](https://www.qemu.org/) on `PATH`
-  - macOS: `brew install qemu` (includes AArch64 UEFI firmware)
-  - Debian/Ubuntu: `apt install qemu-system-arm qemu-efi-aarch64`
-  - Arch: `pacman -S qemu-system-aarch64 edk2-armvirt`
-- `curl`, `tar`, `cpio`, `gzip`, `shasum`
-- No root privileges and no virtual disks: M0 boots from RAM
-
-Hardware acceleration is used when available (HVF on Apple Silicon, KVM
-on Linux aarch64 with `/dev/kvm`) and falls back to TCG otherwise.
-
-## Build / boot / test (M0)
-
-```
-./bin/omarchy-mac-iso-make
-./bin/omarchy-mac-iso-boot          # Ctrl-A X to quit
-./test/unit                        # fast, no network, no VM
-./test/smoke                       # full build + boot + marker + teardown
-```
-
-`omarchy-mac-iso-make` downloads pinned, checksummed upstream artifacts
-(cached under `~/.cache/omarchy-mac-iso/`) and writes
-`release/omarchy-mac-iso-arm64/{vmlinuz,initramfs.img,BUILD_INFO}`.
-
-On smoke failure, the serial log is printed and the run directory is
-kept for debugging.
+A Mac with no Asahi/m1n1 cannot boot this USB. iBoot will not load it until macOS has run the Asahi **UEFI-only** provision. Shrink APFS from macOS, never from Linux.
 
 ## USB image (Apple Silicon host)
 
 On a machine that already runs `linux-asahi`:
 
 ```
-./bin/omarchy-mac-iso-make --usb
-```
-
-Writes `release/omarchy-mac-iso-usb/omarchy-mac-usb.img` — GPT with a FAT32
-ESP labelled `OMARCHYISO` (standalone GRUB, this host's `linux-asahi`,
-initramfs with `dwc3-apple`) and a btrfs payload labelled `OMARCHYLIVE`
-(subvol `@`, tiny busybox `/sbin/init`). No root required. Copying files
-onto an existing FAT stick is not enough — the payload is its own partition.
-
-Systemd userspace plus the Omarchy *shell* packages — needs root,
-`arch-install-scripts`, and local `omarchy-*.pkg.tar.*` (default
-`~/.local/share/omarchy/build-output`):
-
-```
 sudo ./bin/omarchy-mac-iso-make --usb --rootfs
 ```
 
-Autologin root on tty1 (`multi-user.target`, not SDDM). Payload is 8GiB
-btrfs: NetworkManager, Asahi mesa / asahi-audio, gum, Hyprland, Quickshell,
-SDDM, `omarchy` from those tarballs. Still does **not** pacstrap
-`linux-asahi` or `asahi-scripts` (host ESP). Vendor firmware is copied from
-the internal ESP at boot. Default `--usb` without `--rootfs` still hangs at
-busybox pid 1. Override size with `OMARCHY_USB_PAYLOAD_BYTES`; package
-search with `OMARCHY_LOCAL_PACKAGES`. Proven on metal 2026-08-25 (Lexar,
-8GiB `OMARCHYLIVE`, `bootflow` `usb_mass_storage`): autologin
-`root@omarchy-mac-live`, `pacman -Q` reported `omarchy 4.0.0-1`,
-`hyprland 0.56.1-3`, `quickshell 0.3.1-1`, `sddm 0.21.0-7`. Still a tty,
-not a graphical session.
+Writes `release/omarchy-mac-iso-usb/omarchy-mac-usb.img` — GPT with:
+
+- ESP labelled `OMARCHYISO` — standalone GRUB, this host's `linux-asahi`, live initrd (`initramfs-omarchy-usb.img`, `dwc3-apple`) and install initrd (`initramfs-linux-asahi.img`)
+- btrfs labelled `OMARCHYLIVE`, subvol `@` — systemd userspace plus Omarchy shell packages (Hyprland, Quickshell, SDDM, gum, NetworkManager, cryptsetup). Live session is tty autologin (`multi-user.target`), not a graphical login
+
+Needs root, `arch-install-scripts`, and local `omarchy-*.pkg.tar.*` (default `~/.local/share/omarchy/build-output`). Does **not** pacstrap `linux-asahi` or `asahi-scripts` (those touch the host ESP). Vendor firmware is copied from the **internal** ESP at boot.
+
+`--usb` without `--rootfs` still writes a tiny busybox payload and is not the installer. Override payload size with `OMARCHY_USB_PAYLOAD_BYTES`; package search with `OMARCHY_LOCAL_PACKAGES`.
 
 Flash (destroys the target stick):
 
@@ -106,14 +31,21 @@ Flash (destroys the target stick):
 sudo dd if=release/omarchy-mac-iso-usb/omarchy-mac-usb.img of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
+Copying files onto an existing FAT stick is not enough — the payload is its own partition.
+
+### Refresh an existing live USB
+
+Does not need an 8GiB rebuild. Updates installer scripts, GRUB cfg, systemd quieting, and rebuilds **both** initrds (live and install):
+
+```
+sudo ./bin/omarchy-mac-iso-refresh-live
+```
+
+Plug in the live stick (`OMARCHYISO` + `OMARCHYLIVE`). It can also update a wipe-installed USB (`OMARCHYBOOT`) and `/boot/EFI/omarchy/initramfs.img` on a machine that already has Omarchy. You want `copied installer onto the live USB` and `wrote …/initramfs-omarchy-usb.img`.
+
 ### U-Boot
 
-**Shutdown, then power on** — a warm reboot often leaves Type-C/PD
-unenumerated (`0 Storage Device(s) found`). Interrupt U-Boot (~1s) if NVMe
-already has Linux. If `usb storage` is empty or U-Boot skips the stick
-(`Cannot read configuration, skipping device 05dc:c753` on the Lexar),
-`usb reset` until storage appears (twice on metal, 2026-08-23). Do not
-`saveenv`.
+**Shutdown, then power on** — a warm reboot often leaves Type-C unenumerated. Interrupt U-Boot (~1s) if NVMe already has Linux; a UEFI-only Mac with no NVMe EFI should take the stick. If `usb storage` is empty, `usb reset` until it appears. Do not `saveenv`.
 
 ```
 usb reset
@@ -122,77 +54,58 @@ load usb 0:1 ${kernel_addr_r} /EFI/BOOT/BOOTAA64.EFI
 bootefi ${kernel_addr_r} ${fdtcontroladdr}
 ```
 
-`bootflow select` of a USB *row* can still load NVMe's
-`/EFI/BOOT/BOOTAA64.EFI` (same path). `bootflow scan -l` then select the
-`usb_mass_storage` entry (seq 2 on metal, 2026-08-24) and `bootflow boot`
-does load the stick. `load usb 0:1 …` / `bootefi` still works. `bootcmd_usb0`
-is not defined. Live GRUB prints `OMARCHY USB GRUB`; installed GRUB prints
-`OMARCHY USB INSTALL` / menu `Omarchy Mac (USB root)`. Omarchy Linux /
-Advanced options means you are on NVMe.
+`bootflow scan -l` then the `usb_mass_storage` entry also works. `bootflow select` of a USB *row* can still load NVMe's `BOOTAA64.EFI` (same path). Live GRUB prints `OMARCHY USB GRUB`. "Omarchy Linux / Advanced options" means you are on NVMe.
 
-Hiding NVMe `EFI/BOOT/BOOTAA64.EFI` (rename to `.omarchy-bak`; m1n1 stays)
-makes U-Boot take USB GRUB — proven 2026-08-24 after `usb reset` (Type-C
-still needs that). Restore from macOS if Linux will not boot: Apple picker
-(hold power) → macOS. `diskutil mount "EFI - OMARC"` can fail even when
-the volume is fine; then:
+Live boot is meant to be quiet (`loglevel=0`, systemd status off, Plymouth and ldconfig masked on the installer USB only). Installed disks keep `quiet splash` and branded Plymouth.
+
+### Installer
+
+On the live USB, tty1 autologin runs `omarchy-mac-install`. It never `mklabel`s a disk that already has Apple partition types.
+
+It asks for a username, password (re-prompts on mismatch), hostname (empty → `omarchy`), and whether to encrypt (default yes, same password as the user). Then it shows a table of every choice and **Does this look right?** before copying. Tokyo Night is seeded so the first graphical frame is not unthemed.
+
+| Action | What it does |
+|--------|----------------|
+| **Install into free space** | `parted mkpart` in an existing GPT hole only. APFS/iBoot/Recovery stay. Needs unallocated space (macOS APFS shrink or Asahi UEFI-only leftover) |
+| **Reinstall an existing Omarchy root** | Formats that partition only — no `mkpart`, no `mklabel`. Finds btrfs `OMARCHYROOT` or a LUKS volume labelled `OMARCHYROOT` / GPT name `root`. Does not offer Asahi's own LUKS |
+| **Wipe a USB stick and install** | GPT ESP (`OMARCHYBOOT`) + root filling the stick. Persistent desktop, no overlay |
+| **Write GRUB for an existing Omarchy root** | Bootloader only. Skips encrypted roots (needs the inner UUID) |
+| **Clone** | `dd` through the last partition onto another stick; rewrites the clone btrfs UUID |
+
+Wipe, free-space, and replace **copy used files** (`tar` of the overlay lowerdir onto a fresh btrfs `@` / `@home` / `@log`). They do not `dd` the 8GiB payload. Clone is still a block copy. Metal: ~3.5G used tree onto an encrypted NVMe hole in **1m 45s**, SDDM autologin, Hyprland.
+
+LUKS is offered on wipe, free-space, and replace. New containers get label `OMARCHYROOT`. Install initrd runs Plymouth before `encrypt` so there is one branded unlock, not a text prompt then Plymouth.
+
+### System ESP after a disk install
+
+Two modes, never `mkfs` of the ESP, never `update-m1n1`:
+
+- **Piggyback** — `BOOTAA64.EFI` already exists: write `grub/custom.cfg` only, leave the file bytes unchanged
+- **Own** — UEFI-only ESP with no GRUB: write `BOOTAA64.EFI` and marker `/omarchy-mac-root`
+
+Kernels live under `EFI/omarchy/` so a later `grub-mkconfig` on that ESP does not pick them up as stray entries. Backups of `BOOTAA64.EFI` / `grub.cfg` / `custom.cfg` are `*.omarchy-bak` on the ESP. `m1n1/` / `vendorfw/` / `asahi/` hashes must match after.
+
+### Wi-Fi on the live USB
+
+nmtui **Rescan** until SSIDs appear, then Activate. A few rescans is normal.
+
+## Tests
 
 ```
-sudo mkdir -p /Volumes/esp
-sudo mount -t msdos /dev/disk0s4 /Volumes/esp
-mv /Volumes/esp/EFI/BOOT/BOOTAA64.EFI.omarchy-bak \
-   /Volumes/esp/EFI/BOOT/BOOTAA64.EFI
-sudo umount /Volumes/esp
+./test/unit
 ```
 
-Copy the pancake `BOOTAA64.EFI`, not the Lexar's `EFI/BOOT/` file (that is
-USB GRUB). A spare copy lives on the live ESP as `omarchy-restore/`.
+Syntax, installer greps, partition loopback, ESP GRUB loopback. No network, no Mac. `./test/smoke` is the M0 QEMU harness.
 
-Wi-Fi: nmtui Rescan until SSIDs appear (a few rescans is normal), then
-Activate. On the persistent USB root (2026-08-24) that was enough for
-`ping www.google.com`; nmcli is optional.
+## M0 — QEMU boot harness
 
-### Clone vs install
+M0 proves a reproducible ARM64 build crosses a generic AArch64 UEFI boundary under QEMU. **It will not boot an Apple Silicon Mac.** There is no m1n1, U-Boot, Asahi kernel, or USB ESP in that artifact.
 
-On the live USB, `omarchy-mac-install` (refuses NVMe and Apple partition
-GUIDs):
+```
+./bin/omarchy-mac-iso-make
+./bin/omarchy-mac-iso-boot          # Ctrl-A X to quit
+```
 
-- **Clone** — `dd` through the last partition onto another stick (a 16GB-class
-  stick is often smaller than the live USB). Unmounts source and target first
-  unless this *is* the running live overlay. Rewrites the clone btrfs UUID.
-  Proven from Omarchy and from the live USB (2026-08-23): Lexar ↔ 14.5G stick,
-  `gum 2.0.0`, `fnmode=1`.
-- **Install (wipe USB)** — GPT ESP (`OMARCHYBOOT`) + btrfs root filling the
-  disk. Prompts for a desktop user, enables SDDM autologin
-  (`omarchy.desktop` in `/usr/local/share/wayland-sessions`, Hyprland
-  uwsm) and `graphical.target`. Live USB
-  stays tty autologin. Proven on an M2 Max (2026-08-24): 14.5G stick,
-  then console-only; graphical session not metal-proven yet. GRUB must
-  search `/omarchy-usb-install`, not `/initramfs-linux-asahi.img`
-  (that file is the NVMe LUKS initramfs).
-- **Install into free space** — `parted mkpart` in an existing GPT hole only.
-  Never `mklabel`/`wipefs`. Proven on the Lexar hole (keep live
-  `OMARCHYISO`/`OMARCHYLIVE`, new `OMARCHYROOT` 11.4G) and on this NVMe
-  after shrinking APFS **from macOS** (2026-08-24): p7 46G,
-  `root@omarchy-mac`, existing Omarchy still the default GRUB entry.
-  Parted whole-MiB starts can sit inside APFS on 4K NVMe — mkpart insets
-  1MiB. Apple GPT snapshots use `lsblk -l` so tree glyphs do not abort
-  after the new partition appears. Two System ESP modes: **piggyback** if
-  `BOOTAA64.EFI` already exists (`custom.cfg` only, file unchanged);
-  **own** if the ESP is UEFI-only (no GRUB) — same `grub-mkstandalone`
-  recipe as wipe-USB, marker `/omarchy-mac-root`, never `mkfs` or
-  `update-m1n1`. Kernel/initrd go in `EFI/omarchy/` so **any**
-  `grub-mkconfig` on that ESP (pacman hook on the installed OS, not
-  only the live USB) misses them. Legacy `vmlinuz-omarchy-usb-root` and
-  `initramfs-omarchy-usb-root.img` on the ESP root are removed. `m1n1/` /
-  `vendorfw/` / `asahi/` hashes must match after. Installer backups of
-  `BOOTAA64.EFI` / `grub.cfg` / `custom.cfg` are `*.omarchy-bak` on the
-  ESP (timestamped if a bak already exists). Kernel copies under
-  `EFI/omarchy/` are not backed up — they are 50MiB and reproducible
-  from the live USB. Other suffixes on this machine (`.iso-bak`,
-  `.hand-*`, `.gen-badroot`) are ad-hoc restore copies, not installer. A fourth
-  menu item writes GRUB for an existing `OMARCHYROOT` without `mkpart`.
-  **Own-mode metal 2026-08-25:** hid NVMe GRUB, rebuilt live USB, free-space
-  `mkpart` p7, wrote `BOOTAA64.EFI`, USB unplugged → `root@omarchy-mac`.
-  U-Boot only loads one `BOOTAA64.EFI`; own-mode replaces an existing
-  Omarchy GRUB. Restore pancake with the original file (not the live USB's)
-  then `grub-mkconfig` so `quiet splash` brings the branded Plymouth unlock.
+Alpine aarch64 and `linux-virt` are throwaway so the harness can run without Asahi hardware. Do not grow the installer TUI on top of that userspace.
+
+Requirements: `qemu` on PATH (HVF or KVM when available, else TCG), `curl`, `tar`, `cpio`, `gzip`, `shasum`. No root. Artifacts cache under `~/.cache/omarchy-mac-iso/`.

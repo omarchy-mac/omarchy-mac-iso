@@ -95,11 +95,29 @@ check "piggyback custom.cfg loads EFI/omarchy/vmlinuz" \
   "grep -q '/EFI/omarchy/vmlinuz' '$pig/grub/custom.cfg'"
 check "piggyback custom.cfg names the new UUID" \
   "grep -q 'root=UUID=11111111-2222-3333-4444-555555555555' '$pig/grub/custom.cfg'"
+check "piggyback without LUKS has no cryptdevice" \
+  "! grep -q cryptdevice '$pig/grub/custom.cfg'"
+write_piggyback_esp_grub "$pig" "11111111-2222-3333-4444-555555555555" \
+  "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+check "piggyback with LUKS adds cryptdevice" \
+  "grep -q 'cryptdevice=UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:root:allow-discards' '$pig/grub/custom.cfg'"
 check "piggyback sources custom.cfg from grub.cfg" "grep -q custom.cfg '$pig/grub/grub.cfg'"
 check "piggyback leaves m1n1 hash unchanged" "[[ '$before_pig' == '$after_pig' ]]"
 check "esp_has_bootloader is true for piggyback ESP" "[[ -f '$pig/EFI/BOOT/BOOTAA64.EFI' ]]"
 check "esp_has_bootloader is false on an empty ESP dir" \
   "[[ ! -f '$work/empty-esp/EFI/BOOT/BOOTAA64.EFI' ]]"
+
+p7_pairs='NAME="nvme0n1p7" FSTYPE="crypto_LUKS" LABEL="" PARTLABEL="root"'
+asahi_pairs='NAME="nvme0n1p5" FSTYPE="crypto_LUKS" LABEL="" PARTLABEL=""'
+esp_sh="${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
+check "lsblk pairs keep an empty LABEL off PARTLABEL" \
+  "source '$esp_sh'; [[ -z \$(lsblk_pair_field '$p7_pairs' LABEL) ]]"
+check "lsblk pairs read GPT name root on the encrypted hole" \
+  "source '$esp_sh'; [[ \$(lsblk_pair_field '$p7_pairs' PARTLABEL) == root ]]"
+check "lsblk pairs read crypto_LUKS on the encrypted hole" \
+  "source '$esp_sh'; [[ \$(lsblk_pair_field '$p7_pairs' FSTYPE) == crypto_LUKS ]]"
+check "lsblk pairs leave Asahi LUKS unnamed" \
+  "source '$esp_sh'; [[ -z \$(lsblk_pair_field '$asahi_pairs' PARTLABEL) ]]"
 
 if (( failures > 0 )); then
   echo "${failures} esp-grub test failure(s)"

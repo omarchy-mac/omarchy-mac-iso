@@ -62,9 +62,23 @@ esp_copy_unique_kernels() {
     "$esp_mnt/initramfs-omarchy-usb-root.img"
 }
 
+# linux line for an installed root. $2 is the LUKS UUID when encrypted.
+root_linux_args() {
+  local root_uuid=$1 luks_uuid=${2:-}
+  if [[ -n $luks_uuid ]]; then
+    printf 'root=UUID=%s rw rootflags=subvol=@ cryptdevice=UUID=%s:root:allow-discards loglevel=3 quiet splash' \
+      "$root_uuid" "$luks_uuid"
+  else
+    printf 'root=UUID=%s rw rootflags=subvol=@ loglevel=3 quiet splash' "$root_uuid"
+  fi
+}
+
 # Piggyback on an OS that already owns BOOTAA64.EFI (custom.cfg only).
+# $3 is the LUKS UUID when the new root is encrypted.
 write_piggyback_esp_grub() {
-  local esp_mnt=$1 root_uuid=$2
+  local esp_mnt=$1 root_uuid=$2 luks_uuid=${3:-}
+  local linux_args
+  linux_args=$(root_linux_args "$root_uuid" "$luks_uuid")
   mkdir -p "$esp_mnt/grub"
   esp_backup_existing "$esp_mnt" grub/custom.cfg || return 1
   esp_backup_existing "$esp_mnt" grub/grub.cfg || return 1
@@ -72,7 +86,7 @@ write_piggyback_esp_grub() {
   cat >"$esp_mnt/grub/custom.cfg" <<EOF
 menuentry 'Omarchy Mac (new root $root_uuid)' {
   search --no-floppy --file /omarchy-mac-root --set=root
-  linux /EFI/omarchy/vmlinuz root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3 quiet splash
+  linux /EFI/omarchy/vmlinuz $linux_args
   initrd /EFI/omarchy/initramfs.img
 }
 EOF
@@ -83,9 +97,12 @@ EOF
 }
 
 # Take over a UEFI-only System ESP: write BOOTAA64.EFI next to m1n1.
-# $3 is grub-embed-system.cfg. Does not touch m1n1/vendorfw/asahi.
+# $3 is grub-embed-system.cfg. $4 is the LUKS UUID when encrypted.
+# Does not touch m1n1/vendorfw/asahi.
 write_owned_esp_grub() {
-  local esp_mnt=$1 root_uuid=$2 embed_cfg=$3
+  local esp_mnt=$1 root_uuid=$2 embed_cfg=$3 luks_uuid=${4:-}
+  local linux_args
+  linux_args=$(root_linux_args "$root_uuid" "$luks_uuid")
   [[ -f $embed_cfg ]] || return 1
   command -v grub-mkstandalone >/dev/null || return 1
   mkdir -p "$esp_mnt/EFI/BOOT" "$esp_mnt/grub"
@@ -105,7 +122,7 @@ set default=0
 search --no-floppy --file /omarchy-mac-root --set=root
 
 menuentry 'Omarchy Mac' {
-  linux /EFI/omarchy/vmlinuz root=UUID=$root_uuid rw rootflags=subvol=@ loglevel=3 quiet splash
+  linux /EFI/omarchy/vmlinuz $linux_args
   initrd /EFI/omarchy/initramfs.img
 }
 EOF
@@ -118,14 +135,43 @@ EOF
     "boot/grub/grub.cfg=$embed_cfg" >/dev/null
 }
 
-# Print /dev/NAME of btrfs labelled OMARCHYROOT on $1 (disk NAME).
+# One field from an lsblk --pairs line. PARTLABEL contains the letters
+# LABEL, so a greedy .*LABEL= regex reads the wrong column.
+lsblk_pair_field() {
+  local line=$1 want=$2 rest key val
+  rest=$line
+  while [[ $rest =~ ^([A-Z]+)=\"([^\"]*)\"[[:space:]]*(.*)$ ]]; do
+    key=${BASH_REMATCH[1]}
+    val=${BASH_REMATCH[2]}
+    rest=${BASH_REMATCH[3]}
+    if [[ $key == "$want" ]]; then
+      printf '%s\n' "$val"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Print /dev/NAME of the Omarchy root on $1 (disk NAME). Matches a btrfs
+# labelled OMARCHYROOT, or a LUKS container labelled OMARCHYROOT / GPT
+# name "root" (mkpart). Asahi's own LUKS has neither — do not return it.
+# lsblk -l and -P cannot be combined (util-linux errors and prints nothing).
 existing_omarchy_root_on() {
-  local disk=$1 name fstype label
-  while read -r name fstype label; do
+  local disk=$1 line name fstype label partlabel
+  while IFS= read -r line; do
+    name=$(lsblk_pair_field "$line" NAME) || continue
+    fstype=$(lsblk_pair_field "$line" FSTYPE) || fstype=
+    label=$(lsblk_pair_field "$line" LABEL) || label=
+    partlabel=$(lsblk_pair_field "$line" PARTLABEL) || partlabel=
     [[ $name == "$disk" ]] && continue
-    [[ $fstype == btrfs && $label == OMARCHYROOT ]] || continue
-    printf '/dev/%s\n' "$name"
-    return 0
-  done < <(lsblk -ln -o NAME,FSTYPE,LABEL "/dev/$disk" 2>/dev/null)
+    if [[ $fstype == btrfs && $label == OMARCHYROOT ]]; then
+      printf '/dev/%s\n' "$name"
+      return 0
+    fi
+    if [[ $fstype == crypto_LUKS && ( $label == OMARCHYROOT || $partlabel == root ) ]]; then
+      printf '/dev/%s\n' "$name"
+      return 0
+    fi
+  done < <(lsblk -n -P -o NAME,FSTYPE,LABEL,PARTLABEL "/dev/$disk" 2>/dev/null)
   return 1
 }
