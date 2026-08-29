@@ -1,21 +1,173 @@
-# Extra packages on the USB rootfs (S3). Not linux-asahi, m1n1,
-# uboot-asahi, or asahi-scripts — those hooks mount the host ESP.
-# The `omarchy` tarball's depends; local .pkg.tar files are added in
-# build-rootfs.sh via OMARCHY_LOCAL_PACKAGES.
-hyprland
-quickshell
-uwsm
-sddm
-xdg-desktop-portal-hyprland
-# SUPER+Return → omarchy-launch-terminal → xdg-terminal-exec.
-# omarchy-base uses foot; without both, the desktop has no terminal.
-foot
-xdg-terminal-exec
-# SUPER+Shift+Return → omarchy-launch-browser (chromium.desktop).
-chromium
+# Packages pacstrapped onto the USB rootfs. This is the script-based
+# install set from omarchy-mac/install/omarchy-base.packages, plus USB
+# extras Arch `base` does not ship. build-rootfs.sh still unions the
+# sibling omarchy-base.packages at image-build time so new names land
+# here without a copy. Not linux-asahi, m1n1, uboot-asahi, or
+# asahi-scripts — those hooks mount the host ESP. Local omarchy-*.pkg.tar
+# files are added in build-rootfs.sh via OMARCHY_LOCAL_PACKAGES.
+#
+# Skipped from omarchy-base.packages (see packages-aarch64-skip for the
+# rest): gpu-screen-recorder (Apple GPUs; wf-recorder below); obs-studio,
+# dotnet-runtime, pinta, obsidian (omarchy-aarch64-unavailable.packages).
+# Remaps in build-rootfs.sh: nvim → neovim, qemu-user-static-binfmt →
+# qemu-user-binfmt, hyprland-preview-share-picker →
+# hyprland-preview-share-picker-git. Unresolved names fail the build.
+
+# USB extras (not in omarchy-base.packages)
+sudo
+base-devel
 cryptsetup
-snapper
-plymouth
-gnome-keyring
-pacman-contrib
+wf-recorder
+rtkit
+pipewire-alsa
 perl
+# obsidian in omarchy-base.packages is a pkgbase with no aarch64 package;
+# user/hardware/apple/obsidian.sh installs this AppImage instead.
+obsidian-appimage
+# speaker-tuning.sh needs the LV2 limiter or the Asahi filter chain never
+# instantiates. omarchy-pkg-add is stubbed in the ISO chroot.
+lsp-plugins-lv2
+aether
+alsa-utils
+asdcontrol
+avahi
+bash-completion
+bat
+bluez
+bluez-tools
+bluez-utils
+bolt
+brightnessctl
+btop
+chromium
+clang
+cliamp
+cups
+cups-browsed
+cups-filters
+cups-pdf
+ddcutil
+docker
+docker-buildx
+docker-compose
+dosfstools
+dua-cli
+evince
+exfatprogs
+expac
+eza
+fakeroot
+fastfetch
+fcitx5
+fcitx5-gtk
+fcitx5-qt
+fd
+ffmpegthumbnailer
+fontconfig
+foot
+fzf
+git
+gnome-keyring
+gnome-themes-extra
+grim
+gum
+gvfs-mtp
+gvfs-nfs
+gvfs-smb
+herdr
+hyprland
+hyprland-guiutils
+hyprland-preview-share-picker
+hyprpicker
+hyprsunset
+imagemagick
+imv
+inetutils
+inotify-tools
+inxi
+networkmanager
+jq
+kdenlive
+kernel-modules-hook
+lazydocker
+lazygit
+less
+libsecret
+libvips
+libyaml
+libreoffice-fresh
+llvm
+localsend
+lua51
+luarocks
+man-db
+mariadb-libs
+mise-bin
+moonlight-qt
+mpv
+mpv-mpris
+nautilus
+nautilus-python
+gnome-disk-utility
+noto-fonts
+noto-fonts-cjk
+noto-fonts-emoji
+nss-mdns
+neovim
+omacalc
+omacut
+omawrite
+omarchy-nvim
+pacman-contrib
+pamixer
+plocate
+plymouth
+postgresql-libs
+power-profiles-daemon
+python-gobject
+python-poetry-core
+ttfx
+qemu-user-static-binfmt
+qrencode
+qt6-imageformats
+quickshell
+ripgrep
+ruby
+tensaku
+sddm
+slurp
+socat
+starship
+sushi
+system-config-printer
+tesseract
+tesseract-data-eng
+tldr
+tree-sitter-cli
+tmux
+tobi-try
+ttf-ia-writer
+ttf-jetbrains-mono-nerd-basic
+tzupdate
+udiskie
+ufw
+ufw-docker
+unzip
+usage
+uwsm
+whois
+wireless-regdb
+wireplumber
+wl-clipboard
+wtype
+woff2-font-awesome
+xdg-desktop-portal-gtk
+xdg-desktop-portal-hyprland
+xdg-terminal-exec
+xournalpp
+yaru-icon-theme
+yay
+yt-dlp
+zbar
+zram-generator
+zoxide

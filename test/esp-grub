@@ -42,28 +42,37 @@ printf 'legacy-initrd\n' >"$own/initramfs-omarchy-usb-root.img"
 before=$(esp_protected_hashes "$own")
 
 esp_copy_unique_kernels "$fake_live" "$own"
-write_owned_esp_grub "$own" "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" "$embed"
-
-after=$(esp_protected_hashes "$own")
-check "own mode writes BOOTAA64.EFI" "[[ -f '$own/EFI/BOOT/BOOTAA64.EFI' ]]"
-check "own mode writes omarchy-mac-root marker" "[[ -f '$own/omarchy-mac-root' ]]"
-check "own mode grub.cfg names the root UUID" "grep -q 'root=UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' '$own/grub/grub.cfg'"
-check "own mode kept pancake grub.cfg as omarchy-bak" \
-  "grep -qx pancake-menu '$own/grub/grub.cfg.omarchy-bak'"
-check "own mode kept EFI/BOOT/grub.cfg as omarchy-bak" \
-  "grep -qx efi-grub '$own/EFI/BOOT/grub.cfg.omarchy-bak'"
-check "own mode does not bak a missing BOOTAA64.EFI" \
-  "[[ ! -e '$own/EFI/BOOT/BOOTAA64.EFI.omarchy-bak' ]]"
-check "own mode copies vmlinuz under EFI/omarchy" "[[ -f '$own/EFI/omarchy/vmlinuz' ]]"
-check "own mode copies initrd under EFI/omarchy" "[[ -f '$own/EFI/omarchy/initramfs.img' ]]"
-check "own mode removes legacy vmlinuz-omarchy-usb-root" \
-  "[[ ! -e '$own/vmlinuz-omarchy-usb-root' ]]"
-check "own mode removes legacy initramfs-omarchy-usb-root.img" \
-  "[[ ! -e '$own/initramfs-omarchy-usb-root.img' ]]"
-check "own mode does not bak installer kernels under EFI/omarchy" \
-  "[[ ! -e '$own/EFI/omarchy/vmlinuz.omarchy-bak' ]]"
-check "own mode leaves m1n1/vendorfw/asahi hashes unchanged" "[[ '$before' == '$after' ]]"
-check "own mode does not format away m1n1/boot.bin" "[[ -f '$own/m1n1/boot.bin' ]]"
+if command -v grub-mkstandalone >/dev/null; then
+  write_owned_esp_grub "$own" "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" "$embed"
+  after=$(esp_protected_hashes "$own")
+  check "own mode writes BOOTAA64.EFI" "[[ -f '$own/EFI/BOOT/BOOTAA64.EFI' ]]"
+  check "own mode writes omarchy-mac-root marker" "[[ -f '$own/omarchy-mac-root' ]]"
+  check "own mode grub.cfg names the root UUID" "grep -q 'root=UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' '$own/grub/grub.cfg'"
+  check "own mode grub.cfg has a top-level verbose entry" \
+    "grep -q \"menuentry 'Omarchy Mac (verbose)'\" '$own/grub/grub.cfg'"
+  check "own mode verbose drops quiet splash" \
+    "grep -q 'Omarchy Mac (verbose)' '$own/grub/grub.cfg' && grep -q 'loglevel=7' '$own/grub/grub.cfg'"
+  check "own mode does not hide verbose under a submenu" \
+    "! grep -q submenu '$own/grub/grub.cfg'"
+  check "own mode kept pancake grub.cfg as omarchy-bak" \
+    "grep -qx pancake-menu '$own/grub/grub.cfg.omarchy-bak'"
+  check "own mode kept EFI/BOOT/grub.cfg as omarchy-bak" \
+    "grep -qx efi-grub '$own/EFI/BOOT/grub.cfg.omarchy-bak'"
+  check "own mode does not bak a missing BOOTAA64.EFI" \
+    "[[ ! -e '$own/EFI/BOOT/BOOTAA64.EFI.omarchy-bak' ]]"
+  check "own mode copies vmlinuz under EFI/omarchy" "[[ -f '$own/EFI/omarchy/vmlinuz' ]]"
+  check "own mode copies initrd under EFI/omarchy" "[[ -f '$own/EFI/omarchy/initramfs.img' ]]"
+  check "own mode removes legacy vmlinuz-omarchy-usb-root" \
+    "[[ ! -e '$own/vmlinuz-omarchy-usb-root' ]]"
+  check "own mode removes legacy initramfs-omarchy-usb-root.img" \
+    "[[ ! -e '$own/initramfs-omarchy-usb-root.img' ]]"
+  check "own mode does not bak installer kernels under EFI/omarchy" \
+    "[[ ! -e '$own/EFI/omarchy/vmlinuz.omarchy-bak' ]]"
+  check "own mode leaves m1n1/vendorfw/asahi hashes unchanged" "[[ '$before' == '$after' ]]"
+  check "own mode does not format away m1n1/boot.bin" "[[ -f '$own/m1n1/boot.bin' ]]"
+else
+  echo "skip - grub-mkstandalone not installed (own-mode ESP write)"
+fi
 check "embed searches /omarchy-mac-root" "grep -q 'search --no-floppy --file /omarchy-mac-root' '$embed'"
 check "embed does not search live USB marker" "! grep -q 'search.*omarchy-usb-live' '$embed'"
 
@@ -95,6 +104,16 @@ check "piggyback custom.cfg loads EFI/omarchy/vmlinuz" \
   "grep -q '/EFI/omarchy/vmlinuz' '$pig/grub/custom.cfg'"
 check "piggyback custom.cfg names the new UUID" \
   "grep -q 'root=UUID=11111111-2222-3333-4444-555555555555' '$pig/grub/custom.cfg'"
+check "piggyback custom.cfg boots the new root by default" \
+  "grep -q \"set default='Omarchy Mac (new root 11111111-2222-3333-4444-555555555555)'\" '$pig/grub/custom.cfg'"
+check "piggyback custom.cfg has a top-level verbose entry" \
+  "grep -q '(verbose)' '$pig/grub/custom.cfg'"
+check "piggyback verbose drops quiet splash" \
+  "grep -q '(verbose)' '$pig/grub/custom.cfg' && grep -q 'loglevel=7' '$pig/grub/custom.cfg'"
+check "piggyback does not hide verbose under a submenu" \
+  "! grep -q submenu '$pig/grub/custom.cfg'"
+check "piggyback custom.cfg shows the menu long enough to pick" \
+  "grep -q 'set timeout=8' '$pig/grub/custom.cfg'"
 check "piggyback without LUKS has no cryptdevice" \
   "! grep -q cryptdevice '$pig/grub/custom.cfg'"
 write_piggyback_esp_grub "$pig" "11111111-2222-3333-4444-555555555555" \
@@ -102,6 +121,20 @@ write_piggyback_esp_grub "$pig" "11111111-2222-3333-4444-555555555555" \
 check "piggyback with LUKS adds cryptdevice" \
   "grep -q 'cryptdevice=UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:root:allow-discards' '$pig/grub/custom.cfg'"
 check "piggyback sources custom.cfg from grub.cfg" "grep -q custom.cfg '$pig/grub/grub.cfg'"
+printf '%s\n' \
+  "set default=0" \
+  "menuentry 'Omarchy Mac' {" \
+  "  linux /EFI/omarchy/vmlinuz root=UUID=old-root rw cryptdevice=UUID=old-luks:root:allow-discards loglevel=3 quiet splash" \
+  "  initrd /EFI/omarchy/initramfs.img" \
+  "}" \
+  'if [ -f /grub/custom.cfg ]; then source /grub/custom.cfg; fi' \
+  >"$pig/grub/grub.cfg"
+write_piggyback_esp_grub "$pig" "11111111-2222-3333-4444-555555555555" \
+  "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+check "piggyback rewrites a leftover Omarchy Mac linux line" \
+  "grep -q 'root=UUID=11111111-2222-3333-4444-555555555555' '$pig/grub/grub.cfg' && grep -q 'cryptdevice=UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:root:allow-discards' '$pig/grub/grub.cfg'"
+check "piggyback leftover rewrite drops the old root UUID" \
+  "! grep -q old-root '$pig/grub/grub.cfg'"
 check "piggyback leaves m1n1 hash unchanged" "[[ '$before_pig' == '$after_pig' ]]"
 check "esp_has_bootloader is true for piggyback ESP" "[[ -f '$pig/EFI/BOOT/BOOTAA64.EFI' ]]"
 check "esp_has_bootloader is false on an empty ESP dir" \

@@ -73,26 +73,63 @@ root_linux_args() {
   fi
 }
 
+# Script install's grub-mkconfig adds Advanced + fallback. The ISO does not
+# run grub-mkconfig and has one initrd, so Advanced is a verbose boot
+# (no quiet/splash) of that same image.
+root_linux_args_verbose() {
+  root_linux_args "$@" | sed 's/ loglevel=3 quiet splash/ loglevel=7/'
+}
+
+# $1 title. $2 linux_args. $3 is 1 to search /omarchy-mac-root inside each
+# entry (piggyback, sourced from another grub.cfg). Own-mode searches once
+# above the menu.
+grub_root_menu_entries() {
+  local title=$1 linux_args=$2 search_inside=${3:-0}
+  local verbose_args body
+  verbose_args=$(printf '%s' "$linux_args" | sed 's/ loglevel=3 quiet splash/ loglevel=7/')
+  if (( search_inside == 1 )); then
+    body=$'  search --no-floppy --file /omarchy-mac-root --set=root\n'
+  else
+    body=""
+  fi
+  cat <<EOF
+menuentry '$title' {
+${body}  linux /EFI/omarchy/vmlinuz $linux_args
+  initrd /EFI/omarchy/initramfs.img
+}
+menuentry '$title (verbose)' {
+${body}  linux /EFI/omarchy/vmlinuz $verbose_args
+  initrd /EFI/omarchy/initramfs.img
+}
+EOF
+}
+
 # Piggyback on an OS that already owns BOOTAA64.EFI (custom.cfg only).
 # $3 is the LUKS UUID when the new root is encrypted.
 write_piggyback_esp_grub() {
   local esp_mnt=$1 root_uuid=$2 luks_uuid=${3:-}
-  local linux_args
+  local linux_args entry_title
   linux_args=$(root_linux_args "$root_uuid" "$luks_uuid")
+  entry_title="Omarchy Mac (new root $root_uuid)"
   mkdir -p "$esp_mnt/grub"
   esp_backup_existing "$esp_mnt" grub/custom.cfg || return 1
   esp_backup_existing "$esp_mnt" grub/grub.cfg || return 1
   : >"$esp_mnt/omarchy-mac-root"
-  cat >"$esp_mnt/grub/custom.cfg" <<EOF
-menuentry 'Omarchy Mac (new root $root_uuid)' {
-  search --no-floppy --file /omarchy-mac-root --set=root
-  linux /EFI/omarchy/vmlinuz $linux_args
-  initrd /EFI/omarchy/initramfs.img
-}
-EOF
+  # 10_linux still owns default=0 (the previous root UUID). After a
+  # reinstall that filesystem is gone; boot this entry instead.
+  {
+    printf "set default='%s'\nset timeout=8\n" "$entry_title"
+    grub_root_menu_entries "$entry_title" "$linux_args" 1
+  } >"$esp_mnt/grub/custom.cfg"
   if [[ -f $esp_mnt/grub/grub.cfg ]] && ! grep -q custom.cfg "$esp_mnt/grub/grub.cfg"; then
     printf '\nif [ -f /grub/custom.cfg ]; then source /grub/custom.cfg; fi\n' \
       >>"$esp_mnt/grub/grub.cfg"
+  fi
+  # Own-mode leftover: default=0 still boots 'Omarchy Mac' with the previous
+  # root UUID. Rewrite that linux line so an unattended boot hits the new root.
+  if [[ -f $esp_mnt/grub/grub.cfg ]] && grep -q '/EFI/omarchy/vmlinuz' "$esp_mnt/grub/grub.cfg"; then
+    sed -i "s|^[[:space:]]*linux /EFI/omarchy/vmlinuz .* quiet splash|  linux /EFI/omarchy/vmlinuz $linux_args|" \
+      "$esp_mnt/grub/grub.cfg"
   fi
 }
 
@@ -112,7 +149,8 @@ write_owned_esp_grub() {
   esp_backup_existing "$esp_mnt" EFI/BOOT/grub.cfg || return 1
   esp_backup_existing "$esp_mnt" grub/grub.cfg || return 1
   : >"$esp_mnt/omarchy-mac-root"
-  cat >"$esp_mnt/grub/grub.cfg" <<EOF
+  {
+    cat <<'HDR'
 echo '========================================'
 echo '  OMARCHY MAC (System ESP, not USB)'
 echo '========================================'
@@ -121,11 +159,9 @@ set default=0
 
 search --no-floppy --file /omarchy-mac-root --set=root
 
-menuentry 'Omarchy Mac' {
-  linux /EFI/omarchy/vmlinuz $linux_args
-  initrd /EFI/omarchy/initramfs.img
-}
-EOF
+HDR
+    grub_root_menu_entries 'Omarchy Mac' "$linux_args" 0
+  } >"$esp_mnt/grub/grub.cfg"
   cp "$esp_mnt/grub/grub.cfg" "$esp_mnt/EFI/BOOT/grub.cfg"
   grub-mkstandalone -O arm64-efi \
     --fonts="" --locales="" --themes="" \

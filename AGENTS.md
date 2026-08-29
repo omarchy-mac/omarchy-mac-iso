@@ -27,17 +27,17 @@ The USB GPT is ESP (`OMARCHYISO`) + btrfs payload (`OMARCHYLIVE`, subvol `@`).
 
 `refresh-live` must rebuild **both** when the live USB is plugged in. Updating only the install initrd leaves live boot on a stale `initramfs-omarchy-usb.img`.
 
-A full image is `sudo ./bin/omarchy-mac-iso-make --usb --rootfs`. Use refresh for installer scripts, GRUB cfg, initrds, and a short package list on an existing stick.
+A full image is `sudo ./bin/omarchy-mac-iso-make --usb --rootfs` (pacstraps `omarchy-base.packages` plus sudo; 12GiB payload). The builder `pacman -Sy`s first and **fails** if a listed package is not in repos, not a remap, not a local tarball, and not in `packages-aarch64-skip`. Use refresh for installer scripts, GRUB cfg, and initrds on an existing stick. Refresh cannot grow the package set — that needs a rootfs rebuild. 1Password is not pre-installed; `omarchy-install-1password` after first boot sets the browser helper.
 
 ## Installer paths
 
 `omarchy-mac-install` on the live overlay:
 
-- **Wipe USB** / **free space** / **replace existing** — `mkfs.btrfs` then `tar` of used files from the overlay lowerdir (`/run/omarchy-root`). Not a `dd` of the 8GiB payload
+- **Wipe USB** / **free space** / **replace existing** — `mkfs.btrfs` then `tar` of used files from the overlay lowerdir (`/run/omarchy-root`). Not a `dd` of the payload
 - **Clone** — still `dd` through the last partition; rewrite the clone btrfs UUID
 - LUKS is offered on wipe, free-space, and replace. Same password as the desktop user. New LUKS volumes get label `OMARCHYROOT`
 - Replace-existing looks for btrfs `OMARCHYROOT` **or** `crypto_LUKS` with that label / GPT name `root`. Asahi's own LUKS has neither — do not offer it
-- Identity validation re-prompts. Before the copy, show a table of action, target, user, password stars, hostname, encryption, then "Does this look right?"
+- Identity validation re-prompts. Full name and email are optional (git + XCompose). Before the copy, show a table of action, target, user, password stars, full name, email, hostname, encryption, then "Does this look right?"
 - System ESP: **piggyback** (`custom.cfg` only) if `BOOTAA64.EFI` already exists; **own** if the ESP has none. Never rewrite `m1n1/`, `vendorfw/`, or `asahi/`
 
 Free space needs an unallocated GPT hole (from a macOS APFS shrink or Asahi UEFI-only). If the hole is already a partition, use replace-existing.

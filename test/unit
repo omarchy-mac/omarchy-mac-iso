@@ -14,7 +14,8 @@ check() {
     fi
 }
 
-for f in "${repo_root}"/bin/omarchy-mac-iso-* "${repo_root}"/builder/*.sh; do
+for f in "${repo_root}"/bin/omarchy-mac-iso-* "${repo_root}"/builder/*.sh \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"; do
     check "bash -n $(basename "${f}")" bash -n "${f}"
 done
 
@@ -36,6 +37,11 @@ check "KERNEL_PKG_SHA256 is 64 hex chars" bash -c "[[ '${KERNEL_PKG_SHA256}' =~ 
 check "omarchy-mac-iso-make --help works offline" "${repo_root}/bin/omarchy-mac-iso-make" --help
 check "refresh-live can update OMARCHYBOOT without the live USB" grep -q \
   'OMARCHYBOOT' \
+  "${repo_root}/bin/omarchy-mac-iso-refresh-live"
+check "refresh-live finds the asahi hook outside /usr/lib/initcpio" grep -q \
+  '/usr/local/share/omarchy-mac-iso/initcpio' \
+  "${repo_root}/bin/omarchy-mac-iso-refresh-live"
+check "refresh-live finds USB partitions by label" grep -q '/dev/disk/by-label' \
   "${repo_root}/bin/omarchy-mac-iso-refresh-live"
 check "omarchy-mac-iso-make --help mentions --usb" \
   grep -q -- '--usb' <("${repo_root}/bin/omarchy-mac-iso-make" --help)
@@ -65,27 +71,93 @@ check "NM live conf disables polkit auth" grep -q 'auth-polkit=false' \
   "${repo_root}/configs/usb/rootfs/nm-live.conf"
 check "rootfs pacstraps mesa and gum" grep -q ' mesa ' \
   "${repo_root}/builder/build-rootfs.sh"
-check "rootfs extra packages include hyprland" grep -qx hyprland \
+check "rootfs reads omarchy-base.packages" grep -q omarchy-base.packages \
+  "${repo_root}/builder/build-rootfs.sh"
+check "rootfs skips aarch64-unavailable packages" grep -q omarchy-aarch64-unavailable.packages \
+  "${repo_root}/builder/build-rootfs.sh"
+check "rootfs skips gpu-screen-recorder" grep -q 'skip\[gpu-screen-recorder\]=1' \
+  "${repo_root}/builder/build-rootfs.sh"
+check "rootfs extra packages include sudo" grep -qx sudo \
   "${repo_root}/configs/usb/rootfs/packages"
-check "rootfs extra packages include foot" grep -qx foot \
+check "rootfs extra packages include base-devel" grep -qx base-devel \
   "${repo_root}/configs/usb/rootfs/packages"
-check "rootfs extra packages include xdg-terminal-exec" grep -qx xdg-terminal-exec \
+check "rootfs extra packages include wf-recorder" grep -qx wf-recorder \
   "${repo_root}/configs/usb/rootfs/packages"
-check "rootfs extra packages include chromium" grep -qx chromium \
+check "rootfs extra packages include pipewire-alsa" grep -qx pipewire-alsa \
   "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs packages include herdr" grep -qx herdr \
+  "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs packages include mise-bin" grep -qx mise-bin \
+  "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs packages include tmux" grep -qx tmux \
+  "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs packages include yay" grep -qx yay \
+  "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs packages include obsidian-appimage" grep -qx obsidian-appimage \
+  "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs packages include lsp-plugins-lv2" grep -qx lsp-plugins-lv2 \
+  "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs packages include docker" grep -qx docker \
+  "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs packages include neovim" grep -qx neovim \
+  "${repo_root}/configs/usb/rootfs/packages"
+check "rootfs requires herdr mise-bin tmux yay" grep -q \
+  'required_packages=(sudo cryptsetup herdr mise-bin tmux yay)' \
+  "${repo_root}/builder/build-rootfs.sh"
+check "rootfs maps nvim to neovim" grep -q 'nvim) printf' \
+  "${repo_root}/builder/build-rootfs.sh"
+check "rootfs maps qemu-user-static-binfmt to qemu-user-binfmt" grep -q \
+  'qemu-user-static-binfmt) printf' \
+  "${repo_root}/builder/build-rootfs.sh"
+check "rootfs maps hyprland-preview-share-picker to -git" grep -q \
+  'hyprland-preview-share-picker) printf' \
+  "${repo_root}/builder/build-rootfs.sh"
+check "rootfs refreshes pacman dbs before resolve" grep -q 'pacman -Sy --noconfirm' \
+  "${repo_root}/builder/build-rootfs.sh"
+check "rootfs fails if a listed package is not in repos" grep -q \
+  'not in configured repos:' \
+  "${repo_root}/builder/build-rootfs.sh"
+check "rootfs skip file lists asdcontrol" grep -qx asdcontrol \
+  "${repo_root}/configs/usb/rootfs/packages-aarch64-skip"
+check "rootfs skip file lists omarchy-nvim" grep -qx omarchy-nvim \
+  "${repo_root}/configs/usb/rootfs/packages-aarch64-skip"
+check "rootfs skip file lists tobi-try" grep -qx tobi-try \
+  "${repo_root}/configs/usb/rootfs/packages-aarch64-skip"
+check "rootfs reads packages-aarch64-skip" grep -q packages-aarch64-skip \
+  "${repo_root}/builder/build-rootfs.sh"
 check "rootfs extra packages omit linux-asahi" \
   bash -c '! grep -qx linux-asahi "'"${repo_root}"'/configs/usb/rootfs/packages"'
 check "rootfs extra packages omit asahi-scripts" \
   bash -c '! grep -qx asahi-scripts "'"${repo_root}"'/configs/usb/rootfs/packages"'
+check "rootfs finds the asahi hook outside /usr/lib/initcpio" grep -q \
+  '/usr/local/share/omarchy-mac-iso/initcpio' \
+  "${repo_root}/builder/build-rootfs.sh"
+check "usb image finds the asahi hook outside /usr/lib/initcpio" grep -q \
+  '/usr/local/share/omarchy-mac-iso/initcpio' \
+  "${repo_root}/builder/build-usb-image.sh"
+check "usb image work dir is not on /tmp tmpfs" grep -q \
+  'mktemp -d -p /var/tmp' \
+  "${repo_root}/builder/build-usb-image.sh"
+check "usb image loop-mounts the ESP as root" grep -q \
+  'losetup -f --show' \
+  "${repo_root}/builder/build-usb-image.sh"
+check "rootfs scratch dir is not on /tmp tmpfs" grep -q \
+  'mktemp -d -p /var/tmp' \
+  "${repo_root}/builder/build-rootfs.sh"
 check "rootfs installs local omarchy tarball" grep -q 'omarchy-keyring' \
   "${repo_root}/builder/build-rootfs.sh"
 check "rootfs finds local packages via SUDO_USER home" grep -q SUDO_USER \
+  "${repo_root}/builder/build-rootfs.sh"
+check "rootfs local omarchy glob does not match omarchy-keyring" grep -Fq \
+  '${name}-[0-9]*.pkg.tar' \
   "${repo_root}/builder/build-rootfs.sh"
 check "rootfs copies payload pacman.conf" grep -q 'configs/usb/rootfs/pacman.conf' \
   "${repo_root}/builder/build-rootfs.sh"
 check "payload pacman.conf has omarchy-aarch64" grep -q '\[omarchy-aarch64\]' \
   "${repo_root}/configs/usb/rootfs/pacman.conf"
-check "rootfs default payload is 8GiB" grep -q '8 \* 1024 \* 1024 \* 1024' \
+check "rootfs default payload is 12GiB" grep -q '12 \* 1024 \* 1024 \* 1024' \
+  "${repo_root}/builder/build-rootfs.sh"
+check "rootfs compresses the payload with zstd" grep -q 'compress=zstd:1' \
   "${repo_root}/builder/build-rootfs.sh"
 check "rootfs still tmpfs-isolates /boot" grep -q 'mount -t tmpfs tmpfs "$mnt/boot"' \
   "${repo_root}/builder/build-rootfs.sh"
@@ -132,6 +204,84 @@ check "installed root creates a desktop user on @home" grep -q 'subvol=@home' \
 check "installed root seeds Tokyo Night" grep -q 'omarchy-theme-set "Tokyo Night"' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "theme seed locks under /tmp in the chroot" grep -q 'XDG_RUNTIME_DIR=/tmp' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installed root runs omarchy-apply-system --first-install" grep -q \
+  'omarchy-apply-system --install-user "$user" --first-install' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installer sets root password to the desktop password" grep -q \
+  "printf 'root:%s\\\\n' \"\$pass\"" \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installed root runs omarchy-provision-user --first-install" grep -q \
+  'omarchy-provision-user --first-install' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+
+# Omarchy's passwordless keyring is two halves that must ship together:
+# install/login/sddm.sh strips pam_gnome_keyring so a password login cannot
+# create an encrypted login keyring, and install/user/default-keyring.sh seeds
+# the unencrypted Default_keyring that replaces it. An installer that stripped
+# PAM without running user provisioning left no keyring at all, so the first
+# secret prompted for a password nobody had set.
+check "pam_gnome_keyring strip is paired with user provisioning" \
+  bash -c '! grep -q pam_gnome_keyring "$0" || grep -q omarchy-provision-user "$0"' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+# Seeded into the desktop user's home, not root's: default-keyring.sh writes
+# $HOME/.local/share/keyrings and is a no-op if the file already exists.
+check "user provisioning runs as the desktop user in their home" \
+  bash -c 'b=$(sed -n "/^provision_installed_system()/,/^}/p" "$1"); [[ -n $b ]] &&
+    grep -qF "$2" <<<"$b" && grep -qF "$3" <<<"$b"' \
+  bash "${repo_root}/configs/usb/rootfs/omarchy-mac-install" \
+  'runuser -u "$user"' 'HOME=/home/"$user"'
+# @home is mounted only for the useradd/provision window; provisioning after
+# the umount would write the keyring onto @ and lose it at first boot.
+check "user provisioning runs before /home is unmounted" \
+  awk '/useradd --root/{u=1}
+       u && /provision_installed_system "\$root_mnt" "\$user"/{p=1}
+       /umount "\$root_mnt\/home"/{seen=1; if (!(u && p)) bad=1}
+       END{exit (seen && !bad) ? 0 : 1}' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+# install.sh ends a by-hand install with snapshot_factory_baseline, and
+# omarchy-system-factory-reset refuses to run without @factory. The ISO used to
+# create @, @home and @log only, so a reset had nothing to clone.
+check "installer records the @factory reset baseline" grep -q \
+  'btrfs subvolume snapshot -r "$top/@" "$top/@factory"' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+# All three install paths (wipe, free-space, replace) go through
+# personalize_graphical_session, so taking it there covers every one.
+check "@factory baseline is taken on every install path" \
+  bash -c 'b=$(sed -n "/^personalize_graphical_session()/,/^}/p" "$1"); [[ -n $b ]] &&
+    grep -qF "$2" <<<"$b"' \
+  bash "${repo_root}/configs/usb/rootfs/omarchy-mac-install" \
+  'snapshot_factory_baseline "$root_part"'
+# A missing baseline costs factory reset, not the install: the root is written
+# and bootable by the time this runs.
+check "@factory snapshot failure does not abort the install" \
+  bash -c 'b=$(sed -n "/^snapshot_factory_baseline()/,/^}/p" "$1"); [[ -n $b ]] &&
+    ! grep -q "fail \"" <<<"$b"' \
+  bash "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installer does not mark first-run complete" \
+  bash -c '! grep -qE "omarchy-done mark .*first-run|touch .*first-run" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install"'
+check "installer stubs mkinitcpio in the target chroot" grep -q \
+  'install_boot_command_stubs' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installer stubs omarchy-pkg-add in the target chroot" grep -q \
+  'omarchy-pkg-add' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "ISO chroot skips pre-installing 1Password" grep -q \
+  'ISO chroot skips 1Password' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installer seeds mkinitcpio.conf for alt-bootloaders" grep -q \
+  'seed_target_mkinitcpio_conf' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "apply-system failure still finishes the desktop" grep -q \
+  'finishing desktop setup anyway' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installer requires sudo in the payload" grep -q 'usr/bin/sudo' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installer writes 00-omarchy-wheel sudoers" grep -q 'sudoers.d/00-omarchy-wheel' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "rootfs ships 00-omarchy-wheel sudoers" grep -q 'sudoers.d/00-omarchy-wheel' \
+  "${repo_root}/builder/build-rootfs.sh"
+check "installer checks sudoers with visudo" grep -q 'visudo -c' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "payload copy skips pacman gnupg sockets" grep -q "exclude='./etc/pacman.d/gnupg/S.*'" \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
@@ -228,6 +378,18 @@ check "install asks for a hostname" grep -q ask_hostname \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "hostname defaults to omarchy" grep -q 'desktop_hostname=omarchy' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "install asks for git full name and email" grep -q ask_git_identity \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "git identity is skippable" grep -q 'hit return to skip' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "user provisioning exports OMARCHY_USER_NAME" grep -q \
+  'OMARCHY_USER_NAME="$desktop_full_name"' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "user provisioning exports OMARCHY_USER_EMAIL" grep -q \
+  'OMARCHY_USER_EMAIL="$desktop_email"' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "choice review table includes Full name" grep -q 'Full name,%s' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "install reviews every choice before copying" grep -q 'Does this look right?' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "choice review can change user and encryption" grep -q 'No, change it' \
@@ -275,6 +437,27 @@ check "install initramfs runs encrypt after the USB wait" grep -q \
 check "install initramfs starts plymouth before encrypt" grep -q \
   'plymouth omarchy-usb-wait encrypt' \
   "${repo_root}/configs/usb-initcpio/mkinitcpio-install.conf"
+check "usb-wait drops plymouth if the root never appears" grep -q \
+  'plymouth quit' \
+  "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-wait"
+check "install initramfs can load nvme-apple" grep -q 'nvme-apple?' \
+  "${repo_root}/configs/usb-initcpio/mkinitcpio-install.conf"
+check "piggyback GRUB boots the new root by default" grep -q \
+  "set default='%s'" \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
+check "installed GRUB offers a verbose boot entry" grep -q \
+  '(verbose)' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
+check "installed GRUB verbose is not a submenu" \
+  bash -c '! grep -q submenu "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-esp.sh"'
+check "install asks for a timezone" grep -q ask_timezone \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "install writes /etc/localtime from the timezone choice" grep -q \
+  'usr/share/zoneinfo' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "piggyback rewrites leftover EFI/omarchy linux lines" grep -q \
+  'linux /EFI/omarchy/vmlinuz' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
 check "wipe-USB install can luksFormat" grep -q 'cryptsetup luksFormat' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
 check "wipe-USB GRUB can pass cryptdevice" grep -q 'cryptdevice=UUID=' \

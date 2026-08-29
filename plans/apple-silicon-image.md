@@ -354,8 +354,11 @@ depends (Hyprland, Quickshell, SDDM, uwsm) and `pacman -U`s local
 `multi-user.target`. **Metal 2026-08-25:** Lexar 8GiB payload, `pacman -Q`
 `omarchy 4.0.0-1` `hyprland 0.56.1-3` `quickshell 0.3.1-1` `sddm 0.21.0-7`
 at `root@omarchy-mac-live`. Still not `linux-asahi` / `asahi-scripts`.
-Default payload 8GiB. Full `omarchy-base.packages` (Chromium, etc.) and a
-graphical live session are later. `fnmode=1` / `show_notch=1` stay in
+Default payload 12GiB with zstd on the filesystem. Pacstraps
+`omarchy-base.packages` (the script-based install set, minus
+aarch64-unavailable and `gpu-screen-recorder`) plus sudo / cryptsetup /
+wf-recorder. Graphical live session is still later; live target stays
+`multi-user.target`. `fnmode=1` / `show_notch=1` stay in
 this payload. Defer keymap / user / hostname to first boot or the
 installer. Produce `root.img` (btrfs, minimal, sparse, **not** internally
 zstd'd for publication).

@@ -19,9 +19,9 @@ sudo ./bin/omarchy-mac-iso-make --usb --rootfs
 Writes `release/omarchy-mac-iso-usb/omarchy-mac-usb.img` — GPT with:
 
 - ESP labelled `OMARCHYISO` — standalone GRUB, this host's `linux-asahi`, live initrd (`initramfs-omarchy-usb.img`, `dwc3-apple`) and install initrd (`initramfs-linux-asahi.img`)
-- btrfs labelled `OMARCHYLIVE`, subvol `@` — systemd userspace plus Omarchy shell packages (Hyprland, Quickshell, SDDM, gum, NetworkManager, cryptsetup). Live session is tty autologin (`multi-user.target`), not a graphical login
+- btrfs labelled `OMARCHYLIVE`, subvol `@` — systemd userspace plus the same `omarchy-base.packages` set as the script-based install (sudo, Chromium, Docker, fonts, …), plus local `omarchy` tarballs. Live session is tty autologin (`multi-user.target`), not a graphical login. Default payload is 12GiB with zstd; a 16GB stick is the floor. Override with `OMARCHY_USB_PAYLOAD_BYTES`.
 
-Needs root, `arch-install-scripts`, and local `omarchy-*.pkg.tar.*` (default `~/.local/share/omarchy/build-output`). Does **not** pacstrap `linux-asahi` or `asahi-scripts` (those touch the host ESP). Vendor firmware is copied from the **internal** ESP at boot.
+Needs root, `arch-install-scripts`, a sibling `omarchy-mac` checkout (or `OMARCHY_PATH`) for `install/omarchy-base.packages`, and local `omarchy-*.pkg.tar.*` (default `~/.local/share/omarchy/build-output`). Does **not** pacstrap `linux-asahi` or `asahi-scripts` (those touch the host ESP). Vendor firmware is copied from the **internal** ESP at boot. `refresh-live` cannot add this package set — that needs a full `--usb --rootfs` rebuild.
 
 `--usb` without `--rootfs` still writes a tiny busybox payload and is not the installer. Override payload size with `OMARCHY_USB_PAYLOAD_BYTES`; package search with `OMARCHY_LOCAL_PACKAGES`.
 
@@ -35,7 +35,7 @@ Copying files onto an existing FAT stick is not enough — the payload is its ow
 
 ### Refresh an existing live USB
 
-Does not need an 8GiB rebuild. Updates installer scripts, GRUB cfg, systemd quieting, and rebuilds **both** initrds (live and install):
+Does not add packages. Updates installer scripts, GRUB cfg, systemd quieting, and rebuilds **both** initrds (live and install):
 
 ```
 sudo ./bin/omarchy-mac-iso-refresh-live
@@ -62,7 +62,7 @@ Live boot is meant to be quiet (`loglevel=0`, systemd status off, Plymouth and l
 
 On the live USB, tty1 autologin runs `omarchy-mac-install`. It never `mklabel`s a disk that already has Apple partition types.
 
-It asks for a username, password (re-prompts on mismatch), hostname (empty → `omarchy`), and whether to encrypt (default yes, same password as the user). Then it shows a table of every choice and **Does this look right?** before copying. Tokyo Night is seeded so the first graphical frame is not unthemed.
+It asks for a username, password (re-prompts on mismatch), hostname (empty → `omarchy`), full name and email (empty skips; used for git and XCompose), and whether to encrypt (default yes, same password as the user). Then it shows a table of every choice and **Does this look right?** before copying. Tokyo Night is seeded so the first graphical frame is not unthemed.
 
 | Action | What it does |
 |--------|----------------|
@@ -72,7 +72,7 @@ It asks for a username, password (re-prompts on mismatch), hostname (empty → `
 | **Write GRUB for an existing Omarchy root** | Bootloader only. Skips encrypted roots (needs the inner UUID) |
 | **Clone** | `dd` through the last partition onto another stick; rewrites the clone btrfs UUID |
 
-Wipe, free-space, and replace **copy used files** (`tar` of the overlay lowerdir onto a fresh btrfs `@` / `@home` / `@log`). They do not `dd` the 8GiB payload. Clone is still a block copy. Metal: ~3.5G used tree onto an encrypted NVMe hole in **1m 45s**, SDDM autologin, Hyprland.
+Wipe, free-space, and replace **copy used files** (`tar` of the overlay lowerdir onto a fresh btrfs `@` / `@home` / `@log`). They do not `dd` the payload. After the copy the installer runs `omarchy-apply-system --first-install` and `omarchy-provision-user --first-install` in the target (same as `omarchy-mac/install.sh`). First graphical login still runs `omarchy-provision-first-run` for the welcome / timezone / Wi-Fi / update toasts. Clone is still a block copy.
 
 LUKS is offered on wipe, free-space, and replace. New containers get label `OMARCHYROOT`. Install initrd runs Plymouth before `encrypt` so there is one branded unlock, not a text prompt then Plymouth.
 

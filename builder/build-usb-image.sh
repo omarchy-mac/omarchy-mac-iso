@@ -20,12 +20,21 @@ command -v mkfs.vfat >/dev/null || fail "mkfs.vfat not found (pacman -S dosfstoo
 command -v parted >/dev/null || fail "parted not found"
 command -v udisksctl >/dev/null || fail "udisksctl not found"
 
-work="$(mktemp -d)"
+# /tmp is often a small tmpfs (16GiB here). A 12GiB payload plus pacstrap
+# does not fit; transaction aborted looks like a random pacman failure.
+work="$(mktemp -d -p /var/tmp omarchy-mac-iso.XXXXXX)"
+log "work dir $work (not /tmp tmpfs)"
 loop_dev=""
+esp_priv=0
 cleanup() {
   if [[ -n $loop_dev ]]; then
-    udisksctl unmount -b "$loop_dev" --no-user-interaction >/dev/null 2>&1 || true
-    udisksctl loop-delete -b "$loop_dev" --no-user-interaction >/dev/null 2>&1 || true
+    if (( esp_priv == 1 )); then
+      umount "$loop_dev" 2>/dev/null || umount -l "$loop_dev" 2>/dev/null || true
+      losetup -d "$loop_dev" 2>/dev/null || true
+    else
+      udisksctl unmount -b "$loop_dev" --no-user-interaction >/dev/null 2>&1 || true
+      udisksctl loop-delete -b "$loop_dev" --no-user-interaction >/dev/null 2>&1 || true
+    fi
   fi
   rm -rf "$work"
 }
@@ -42,19 +51,30 @@ fi
 payload_bytes=$(stat -c %s "$work/payload.img")
 payload_mib=$(( (payload_bytes + 1024 * 1024 - 1) / (1024 * 1024) ))
 
+# asahi-scripts is not pacstrapped. ISO-installed hosts keep the hook under
+# the share path, not /usr/lib/initcpio.
+mkinitcpio_dirs=(-D /usr/lib/initcpio -D "$repo_root/configs/usb-initcpio")
+asahi_hook=""
+for dir in /usr/lib/initcpio /usr/local/share/omarchy-mac-iso/initcpio; do
+  [[ -f $dir/hooks/asahi ]] || continue
+  asahi_hook=$dir/hooks/asahi
+  [[ $dir == /usr/lib/initcpio ]] || mkinitcpio_dirs+=(-D "$dir")
+  break
+done
+[[ -n $asahi_hook ]] \
+  || fail "asahi mkinitcpio hook missing (looked in /usr/lib/initcpio and /usr/local/share/omarchy-mac-iso/initcpio)"
+
 log "Building live initramfs (linux-asahi $kver, dwc3-apple)"
 mkinitcpio -n \
   -c "$repo_root/configs/usb-initcpio/mkinitcpio.conf" \
-  -D /usr/lib/initcpio \
-  -D "$repo_root/configs/usb-initcpio" \
+  "${mkinitcpio_dirs[@]}" \
   -k "$kver" \
   -g "$work/initramfs-omarchy-usb.img"
 
 log "Building install initramfs (USB root, no overlay)"
 mkinitcpio -n \
   -c "$repo_root/configs/usb-initcpio/mkinitcpio-install.conf" \
-  -D /usr/lib/initcpio \
-  -D "$repo_root/configs/usb-initcpio" \
+  "${mkinitcpio_dirs[@]}" \
   -k "$kver" \
   -g "$work/initramfs-linux-asahi.img"
 
@@ -77,19 +97,33 @@ log "Formatting ESP"
 mkfs.vfat -F 32 -n OMARCHYISO -C "$work/esp.fat" "$fat_kb" >/dev/null
 
 log "Populating ESP"
-map_out="$(udisksctl loop-setup -f "$work/esp.fat" --no-user-interaction)"
-loop_dev="$(printf '%s\n' "$map_out" | grep -oE '/dev/loop[0-9]+')"
-[[ -n $loop_dev ]] || fail "udisksctl loop-setup did not print a loop device"
-
+# A plugged-in live USB is also labelled OMARCHYISO. udisks then auto-mounts
+# this loop (same label) at /run/media/scott/OMARCHYISO and "AlreadyMounted"
+# races the explicit mount. Root builds loop-mount privately.
 mnt=""
-for _ in $(seq 1 20); do
-  mnt="$(findmnt -n -o TARGET "$loop_dev" 2>/dev/null || true)"
-  [[ -n $mnt ]] && break
-  sleep 0.2
-done
-if [[ -z $mnt ]]; then
-  mount_out="$(udisksctl mount -b "$loop_dev" --no-user-interaction)"
-  mnt="$(printf '%s\n' "$mount_out" | awk '{print $NF}' | tr -d '.')"
+if (( EUID == 0 )); then
+  loop_dev="$(losetup -f --show "$work/esp.fat")"
+  [[ -n $loop_dev ]] || fail "losetup failed for $work/esp.fat"
+  mkdir -p "$work/esp"
+  mount "$loop_dev" "$work/esp"
+  mnt=$work/esp
+  esp_priv=1
+else
+  map_out="$(udisksctl loop-setup -f "$work/esp.fat" --no-user-interaction)"
+  loop_dev="$(printf '%s\n' "$map_out" | grep -oE '/dev/loop[0-9]+')"
+  [[ -n $loop_dev ]] || fail "udisksctl loop-setup did not print a loop device"
+  for _ in $(seq 1 20); do
+    mnt="$(findmnt -n -o TARGET "$loop_dev" 2>/dev/null | awk 'NR==1{print; exit}')"
+    [[ -n $mnt && -d $mnt ]] && break
+    sleep 0.2
+  done
+  if [[ -z $mnt || ! -d $mnt ]]; then
+    mount_out="$(udisksctl mount -b "$loop_dev" --no-user-interaction 2>&1)" || true
+    mnt="$(findmnt -n -o TARGET "$loop_dev" 2>/dev/null | awk 'NR==1{print; exit}')"
+    if [[ -z $mnt ]]; then
+      mnt="$(printf '%s\n' "$mount_out" | awk '{print $NF}' | tr -d '.')"
+    fi
+  fi
 fi
 [[ -d $mnt ]] || fail "could not mount ESP FAT image"
 
@@ -103,9 +137,15 @@ cp "$work/initramfs-omarchy-usb.img" "$mnt/initramfs-omarchy-usb.img"
 cp "$work/initramfs-linux-asahi.img" "$mnt/initramfs-linux-asahi.img"
 sync
 
-udisksctl unmount -b "$loop_dev" --no-user-interaction >/dev/null
-udisksctl loop-delete -b "$loop_dev" --no-user-interaction >/dev/null
+if (( esp_priv == 1 )); then
+  umount "$mnt"
+  losetup -d "$loop_dev"
+else
+  udisksctl unmount -b "$loop_dev" --no-user-interaction >/dev/null
+  udisksctl loop-delete -b "$loop_dev" --no-user-interaction >/dev/null
+fi
 loop_dev=""
+esp_priv=0
 
 log "Wrapping GPT disk image (ESP ${fat_mib}MiB + payload ${payload_mib}MiB)"
 disk="$out_dir/omarchy-mac-usb.img"

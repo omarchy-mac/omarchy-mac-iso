@@ -268,6 +268,8 @@ require_graphical_payload() {
   local root=${1:-}
   [[ -x $root/usr/bin/sddm ]] \
     || fail "sddm not in this payload — rebuild with --usb --rootfs"
+  [[ -x $root/usr/bin/sudo ]] \
+    || fail "sudo not in this payload — rebuild with --usb --rootfs"
   wayland_session_path "$root" >/dev/null \
     || fail "no Hyprland/omarchy wayland session in this payload — rebuild with --usb --rootfs"
 }
@@ -281,6 +283,9 @@ ask_desktop_user() {
     desktop_user=dryrun
     desktop_pass=dryrun
     desktop_hostname=omarchy
+    desktop_full_name=""
+    desktop_email=""
+    desktop_timezone=UTC
     return 0
   fi
   while true; do
@@ -313,6 +318,8 @@ ask_desktop_user() {
     break
   done
   ask_hostname
+  ask_git_identity
+  ask_timezone
 }
 
 # Same rules as install/provisioning/setup-form.sh. Empty → omarchy.
@@ -332,6 +339,40 @@ ask_hostname() {
   done
 }
 
+# Same as omarchy_prompt_identity: used for git and XCompose. Return skips.
+ask_git_identity() {
+  local name email
+  if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
+    desktop_full_name=${desktop_full_name:-}
+    desktop_email=${desktop_email:-}
+    return 0
+  fi
+  name=$(gum input --placeholder "Used for git authentication (hit return to skip)" \
+    --header "Full name")
+  email=$(gum input --placeholder "Used for git authentication (hit return to skip)" \
+    --header "Email address")
+  desktop_full_name=$name
+  desktop_email=$email
+}
+
+# Same as omarchy_prompt_timezone. Empty / cancel keeps UTC (image default).
+ask_timezone() {
+  local guess tz
+  if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
+    desktop_timezone=${desktop_timezone:-UTC}
+    return 0
+  fi
+  guess=$(tzupdate -p 2>/dev/null || true)
+  if [[ -n $guess ]]; then
+    tz=$(timedatectl list-timezones | gum choose --height 10 --selected "$guess" \
+      --header "Timezone (Esc keeps UTC)") || tz=""
+  else
+    tz=$(timedatectl list-timezones | gum filter --height 10 \
+      --header "Timezone (Esc keeps UTC)") || tz=""
+  fi
+  desktop_timezone=${tz:-UTC}
+}
+
 write_installed_hostname() {
   local root_mnt=$1
   printf '%s\n' "$desktop_hostname" >"$root_mnt/etc/hostname"
@@ -340,6 +381,20 @@ write_installed_hostname() {
 ::1 localhost
 127.0.1.1 $desktop_hostname
 EOF
+}
+
+write_installed_timezone() {
+  local root_mnt=$1 tz=${2:-${desktop_timezone:-UTC}}
+  if [[ -z $tz || $tz == UTC ]]; then
+    printf '==> timezone UTC (image default)\n'
+    return 0
+  fi
+  if [[ ! -e $root_mnt/usr/share/zoneinfo/$tz ]]; then
+    printf '==> timezone %s not in zoneinfo; leaving UTC\n' "$tz"
+    return 0
+  fi
+  ln -sfn "/usr/share/zoneinfo/$tz" "$root_mnt/etc/localtime"
+  printf '==> timezone %s\n' "$tz"
 }
 
 # Sets encrypt_root=1 when the user keeps the default. Same password as
@@ -358,7 +413,7 @@ ask_encrypt_root() {
 # "Does this look right?" No, change it re-asks user + encryption.
 confirm_install_choices() {
   local action_label=$1 target_label=$2
-  local stars encrypt_label
+  local stars encrypt_label name_label email_label
   while true; do
     stars=$(printf '%*s' "${#desktop_pass}" '' | tr ' ' '*')
     if (( encrypt_root == 1 )); then
@@ -366,14 +421,19 @@ confirm_install_choices() {
     else
       encrypt_label="No"
     fi
+    name_label=${desktop_full_name:-"(skipped)"}
+    email_label=${desktop_email:-"(skipped)"}
     echo
-    printf 'Field,Value\nAction,%s\nTarget,%s\nUsername,%s\nPassword,%s\nHostname,%s\nEncryption,%s\n' \
-      "$action_label" "$target_label" "$desktop_user" "$stars" "$desktop_hostname" "$encrypt_label" |
+    printf 'Field,Value\nAction,%s\nTarget,%s\nUsername,%s\nPassword,%s\nFull name,%s\nEmail,%s\nHostname,%s\nTimezone,%s\nEncryption,%s\n' \
+      "$action_label" "$target_label" "$desktop_user" "$stars" \
+      "$name_label" "$email_label" "$desktop_hostname" \
+      "${desktop_timezone:-UTC}" "$encrypt_label" |
       gum table -s "," -p
     echo
     if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
-      printf 'dry-run: Does this look right? user=%s host=%s encrypt=%s target=%s\n' \
-        "$desktop_user" "$desktop_hostname" "$encrypt_label" "$target_label"
+      printf 'dry-run: Does this look right? user=%s name=%s email=%s host=%s tz=%s encrypt=%s target=%s\n' \
+        "$desktop_user" "$name_label" "$email_label" "$desktop_hostname" \
+        "${desktop_timezone:-UTC}" "$encrypt_label" "$target_label"
       return 0
     fi
     if gum confirm --affirmative "Yes, install" --negative "No, change it" \
@@ -401,7 +461,7 @@ live_payload_mount() {
   return 1
 }
 
-# Used size of the live tree, not the 8GiB payload partition.
+# Used size of the live tree, not the payload partition.
 live_payload_used_bytes() {
   local src bytes
   src=$(live_payload_mount) || fail "live payload @ is not mounted"
@@ -437,13 +497,115 @@ copy_live_payload() {
   sync
 }
 
+# Bind the target so omarchy-apply-system can run in the copied tree.
+# /boot is a tmpfs: login/plymouth.sh and alt-bootloaders.sh would otherwise
+# mkinitcpio/grub-mkconfig onto the live USB or a half-written ESP. The
+# installer owns the ESP initrd and GRUB after this returns.
+target_chroot_bound=()
+
+target_chroot_bind() {
+  local root_mnt=$1 bind
+  target_chroot_bound=()
+  for bind in proc sys dev dev/pts run tmp boot; do
+    mkdir -p "$root_mnt/$bind"
+    findmnt "$root_mnt/$bind" >/dev/null && continue
+    case $bind in
+      tmp|run|boot) mount -t tmpfs tmpfs "$root_mnt/$bind" ;;
+      dev) mount --bind /dev "$root_mnt/dev" ;;
+      dev/pts)
+        mount --bind /dev/pts "$root_mnt/dev/pts" 2>/dev/null \
+          || mount -t devpts devpts "$root_mnt/dev/pts"
+        ;;
+      *) mount --bind "/$bind" "$root_mnt/$bind" ;;
+    esac
+    target_chroot_bound+=("$root_mnt/$bind")
+  done
+  if [[ -f /etc/resolv.conf ]]; then
+    cp -L /etc/resolv.conf "$root_mnt/etc/resolv.conf" 2>/dev/null || true
+  fi
+}
+
+target_chroot_unbind() {
+  local i
+  (( ${#target_chroot_bound[@]} > 0 )) || return 0
+  for (( i=${#target_chroot_bound[@]}-1; i>=0; i-- )); do
+    umount "${target_chroot_bound[i]}" 2>/dev/null \
+      || umount -l "${target_chroot_bound[i]}" 2>/dev/null || true
+  done
+  target_chroot_bound=()
+}
+
+# plymouth/alt-bootloaders call these; the ISO already wrote the ESP.
+# omarchy-apply-system prepends /usr/share/omarchy/bin, so stubs there
+# (not /usr/local/sbin) or audio.sh still pacmans from the network.
+iso_chroot_stub_binds=()
+
+install_boot_command_stubs() {
+  local root_mnt=$1 cmd dest
+  mkdir -p "$root_mnt/usr/local/sbin" "$root_mnt/tmp"
+  printf '#!/bin/bash\n# ISO chroot: packages and the ESP initrd are already on the payload.\nexit 0\n' \
+    >"$root_mnt/tmp/omarchy-iso-chroot-stub"
+  chmod 755 "$root_mnt/tmp/omarchy-iso-chroot-stub"
+  # 1Password is optional and is not pre-installed. optional-apps.sh would
+  # otherwise download it here. The real installer still sets the
+  # onepassword group + setgid on 1Password-BrowserSupport when the user
+  # runs omarchy-install-1password after first boot.
+  printf '%s\n' \
+    '#!/bin/bash' \
+    'echo "ISO chroot skips 1Password; install later with omarchy-install-1password"' \
+    'exit 0' \
+    >"$root_mnt/tmp/omarchy-iso-chroot-skip-1password"
+  chmod 755 "$root_mnt/tmp/omarchy-iso-chroot-skip-1password"
+  iso_chroot_stub_binds=()
+  for cmd in mkinitcpio grub-mkconfig limine-mkinitcpio; do
+    install -m755 "$root_mnt/tmp/omarchy-iso-chroot-stub" \
+      "$root_mnt/usr/local/sbin/$cmd"
+  done
+  for dest in \
+    "$root_mnt/usr/share/omarchy/bin/omarchy-pkg-add" \
+    "$root_mnt/usr/share/omarchy/bin/omarchy-pkg-aur-add"
+  do
+    [[ -e $dest ]] || continue
+    mount --bind "$root_mnt/tmp/omarchy-iso-chroot-stub" "$dest"
+    iso_chroot_stub_binds+=("$dest")
+  done
+  dest="$root_mnt/usr/share/omarchy/bin/omarchy-install-1password"
+  if [[ -e $dest ]]; then
+    mount --bind "$root_mnt/tmp/omarchy-iso-chroot-skip-1password" "$dest"
+    iso_chroot_stub_binds+=("$dest")
+  fi
+}
+
+remove_boot_command_stubs() {
+  local root_mnt=$1 dest
+  for dest in "${iso_chroot_stub_binds[@]}"; do
+    umount "$dest" 2>/dev/null || umount -l "$dest" 2>/dev/null || true
+  done
+  iso_chroot_stub_binds=()
+  rm -f "$root_mnt/usr/local/sbin/mkinitcpio" \
+    "$root_mnt/usr/local/sbin/grub-mkconfig" \
+    "$root_mnt/usr/local/sbin/limine-mkinitcpio" \
+    "$root_mnt/tmp/omarchy-iso-chroot-stub" \
+    "$root_mnt/tmp/omarchy-iso-chroot-skip-1password"
+}
+
+# login/alt-bootloaders.sh greps and copies this. The payload has no linux
+# package, so the file is missing; the installer owns the ESP initrd anyway.
+seed_target_mkinitcpio_conf() {
+  local root_mnt=$1
+  [[ -f $root_mnt/etc/mkinitcpio.conf ]] && return 0
+  cat >"$root_mnt/etc/mkinitcpio.conf" <<'EOF'
+# Placeholder so login/alt-bootloaders.sh does not abort in the ISO chroot.
+# The installer owns the ESP initrd; this file is not used to build it.
+HOOKS=(base udev plymouth keyboard keymap block encrypt filesystems)
+EOF
+}
+
 # Same default as install/user/theme.sh. Seed at install so the first
 # frame is Tokyo Night even if first-run is slow. Failure is non-fatal:
 # omarchy-provision-first-run retries on login.
 seed_tokyo_night() {
   local root_mnt=$1 user=$2
-  local bind
-  local -a bound=()
 
   if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
     printf 'dry-run: default theme Tokyo Night for %s\n' "$user"
@@ -451,18 +613,6 @@ seed_tokyo_night() {
   fi
   [[ -d $root_mnt/usr/share/omarchy/themes/tokyo-night ]] || return 0
   [[ -x $root_mnt/usr/bin/omarchy-theme-set ]] || return 0
-
-  for bind in proc sys dev tmp; do
-    mkdir -p "$root_mnt/$bind"
-    if ! findmnt "$root_mnt/$bind" >/dev/null; then
-      if [[ $bind == tmp ]]; then
-        mount -t tmpfs tmpfs "$root_mnt/tmp"
-      else
-        mount --bind "/$bind" "$root_mnt/$bind"
-      fi
-      bound+=("$root_mnt/$bind")
-    fi
-  done
 
   if chroot "$root_mnt" runuser -u "$user" -- env \
       HOME=/home/"$user" USER="$user" LOGNAME="$user" \
@@ -476,11 +626,99 @@ seed_tokyo_night() {
   else
     printf '==> Tokyo Night seed failed for %s; first login will retry\n' "$user"
   fi
-
-  for bind in "${bound[@]}"; do
-    umount "$bind" 2>/dev/null || umount -l "$bind" 2>/dev/null || true
-  done
   return 0
+}
+
+# Same sequence as omarchy-mac install.sh after packages: root system
+# setup, then per-user finalize. Leaves first-login toasts to Hyprland
+# autostart (omarchy-provision-first-run: welcome / timezone / Wi-Fi /
+# update).
+provision_installed_system() {
+  local root_mnt=$1 user=$2 apply_status
+
+  if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
+    printf 'dry-run: omarchy-apply-system --install-user %s --first-install\n' "$user"
+    printf 'dry-run: omarchy-provision-user --first-install\n'
+    return 0
+  fi
+
+  [[ -x $root_mnt/usr/bin/omarchy-apply-system ]] \
+    || fail "omarchy-apply-system missing — rebuild with --usb --rootfs"
+  [[ -x $root_mnt/usr/bin/omarchy-provision-user ]] \
+    || fail "omarchy-provision-user missing — rebuild with --usb --rootfs"
+
+  install_boot_command_stubs "$root_mnt"
+  seed_target_mkinitcpio_conf "$root_mnt"
+  target_chroot_bind "$root_mnt"
+
+  printf '==> omarchy-apply-system --install-user %s --first-install\n' "$user"
+  apply_status=0
+  chroot "$root_mnt" env \
+      OMARCHY_PATH=/usr/share/omarchy \
+      OMARCHY_SETUP_CONTEXT=iso-chroot \
+      OMARCHY_LOG_TO_STDOUT=1 \
+      omarchy-apply-system --install-user "$user" --first-install \
+    || apply_status=$?
+  if (( apply_status != 0 )); then
+    printf '==> omarchy-apply-system failed (exit %s); finishing desktop setup anyway\n' \
+      "$apply_status"
+  fi
+
+  seed_tokyo_night "$root_mnt" "$user"
+
+  printf '==> omarchy-provision-user --first-install for %s\n' "$user"
+  if ! chroot "$root_mnt" runuser -u "$user" -- env \
+      HOME=/home/"$user" USER="$user" LOGNAME="$user" \
+      XDG_RUNTIME_DIR=/tmp \
+      OMARCHY_PATH=/usr/share/omarchy \
+      OMARCHY_SETUP_CONTEXT=iso-chroot \
+      OMARCHY_LOG_TO_STDOUT=1 \
+      OMARCHY_USER_NAME="$desktop_full_name" \
+      OMARCHY_USER_EMAIL="$desktop_email" \
+      omarchy-provision-user --first-install
+  then
+    printf '==> omarchy-provision-user failed for %s; first login will retry\n' "$user"
+  fi
+
+  target_chroot_unbind
+  remove_boot_command_stubs "$root_mnt"
+}
+
+# Same baseline install.sh records at the end of a by-hand install, and the
+# same one the x86 Quattro ISO takes: a read-only clone of the finished @.
+# omarchy-system-factory-reset clones @factory to rebuild the root, and
+# refuses to run without it. Only the installer can take it — @ has to be
+# complete and quiescent, which it is once provisioning, SDDM and the default
+# target are written and before the caller syncs and unmounts.
+snapshot_factory_baseline() {
+  local root_part=$1 top
+
+  if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
+    printf 'dry-run: btrfs subvolume snapshot -r @ @factory\n'
+    return 0
+  fi
+
+  top=$(mktemp -d)
+  # subvolid=5 is the top level, where @ and its siblings live; $root_part is
+  # already the decrypted mapper on an encrypted install.
+  if ! mount -o subvolid=5 "$root_part" "$top" 2>/dev/null; then
+    rmdir "$top"
+    printf '==> could not mount the top-level subvolume; no @factory baseline\n'
+    return 0
+  fi
+
+  if [[ -d $top/@factory ]]; then
+    printf '==> @factory already exists; keeping it as the reset baseline\n'
+  elif btrfs subvolume snapshot -r "$top/@" "$top/@factory" >/dev/null; then
+    printf '==> @factory baseline recorded for omarchy-system-factory-reset\n'
+  else
+    # Non-fatal: the install is complete and bootable either way, only
+    # omarchy-system-factory-reset is unavailable.
+    printf '==> @factory snapshot failed; factory reset will be unavailable\n'
+  fi
+
+  umount "$top"
+  rmdir "$top"
 }
 
 # Live USB stays tty autologin. Installed roots get a user, SDDM, and
@@ -495,6 +733,8 @@ personalize_graphical_session() {
 
   if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
     printf 'dry-run: useradd %s + enable sddm + graphical.target\n' "$user"
+    provision_installed_system "$root_mnt" "$user"
+    snapshot_factory_baseline "$root_part"
     return 0
   fi
 
@@ -505,8 +745,29 @@ personalize_graphical_session() {
   fi
   useradd --root "$root_mnt" -m -s /bin/bash \
     -G wheel,video,audio,input,render "$user"
+  # Same password for the desktop user and root, matching the x86 ISO
+  # setup form ("user + root"). If sudo is missing, su still works.
   printf '%s:%s\n' "$user" "$pass" | chpasswd --root "$root_mnt"
-  seed_tokyo_night "$root_mnt" "$user"
+  printf 'root:%s\n' "$pass" | chpasswd --root "$root_mnt"
+
+  [[ -x $root_mnt/usr/bin/sudo ]] \
+    || fail "sudo not in this payload — rebuild with --usb --rootfs"
+  # Same file omarchy-provision-owner writes. The payload already has a copy
+  # from build-rootfs.sh; rewrite it here so a stale tree still grants wheel.
+  install -d -m750 "$root_mnt/etc/sudoers.d"
+  printf '%%wheel ALL=(ALL:ALL) ALL\n' >"$root_mnt/etc/sudoers.d/00-omarchy-wheel"
+  chmod 440 "$root_mnt/etc/sudoers.d/00-omarchy-wheel"
+  if [[ -f $root_mnt/etc/sudoers ]]; then
+    # Arch comments this out; sudoers.d is the real grant, this is backup.
+    sed -i 's/^# *%wheel ALL=(ALL:ALL) ALL$/%wheel ALL=(ALL:ALL) ALL/' \
+      "$root_mnt/etc/sudoers"
+  fi
+  if [[ -x $root_mnt/usr/bin/visudo ]]; then
+    chroot "$root_mnt" visudo -c >/dev/null \
+      || fail "sudoers is invalid after writing 00-omarchy-wheel"
+  fi
+
+  provision_installed_system "$root_mnt" "$user"
   if (( home_mounted == 1 )); then
     umount "$root_mnt/home"
   fi
@@ -524,9 +785,6 @@ EOF
     sed -i '/-auth.*pam_gnome_keyring\.so/d' "$root_mnt/etc/pam.d/sddm"
     sed -i '/-password.*pam_gnome_keyring\.so/d' "$root_mnt/etc/pam.d/sddm"
   fi
-  install -d -m750 "$root_mnt/etc/sudoers.d"
-  printf '%%wheel ALL=(ALL:ALL) ALL\n' >"$root_mnt/etc/sudoers.d/wheel"
-  chmod 440 "$root_mnt/etc/sudoers.d/wheel"
 
   systemctl --root="$root_mnt" disable omarchy-mac-usb-ready.service 2>/dev/null || true
   systemctl --root="$root_mnt" enable sddm.service
@@ -534,6 +792,8 @@ EOF
   systemctl --root="$root_mnt" mask NetworkManager-wait-online.service 2>/dev/null || true
 
   printf '==> desktop user %s, SDDM autologin, graphical.target\n' "$user"
+
+  snapshot_factory_baseline "$root_part"
 }
 
 install_persistent_root() {
@@ -603,6 +863,7 @@ install_persistent_root() {
     printf 'root UUID=%s none luks,discard,x-initrd.attach\n' "$luks_uuid" >"$root_mnt/etc/crypttab"
   fi
   write_installed_hostname "$root_mnt"
+  write_installed_timezone "$root_mnt"
   cat >"$root_mnt/etc/issue" <<'EOF'
 Omarchy Mac (installed). SDDM autologin.
 EOF
@@ -881,6 +1142,7 @@ install_into_free_space() {
     printf 'root UUID=%s none luks,discard,x-initrd.attach\n' "$luks_uuid" >"$root_mnt/etc/crypttab"
   fi
   write_installed_hostname "$root_mnt"
+  write_installed_timezone "$root_mnt"
   cat >"$root_mnt/etc/issue" <<'EOF'
 Omarchy Mac (installed). SDDM autologin.
 EOF
@@ -1038,6 +1300,7 @@ install_over_existing_root() {
     printf 'root UUID=%s none luks,discard,x-initrd.attach\n' "$luks_uuid" >"$root_mnt/etc/crypttab"
   fi
   write_installed_hostname "$root_mnt"
+  write_installed_timezone "$root_mnt"
   cat >"$root_mnt/etc/issue" <<'EOF'
 Omarchy Mac (installed). SDDM autologin.
 EOF

@@ -31,8 +31,10 @@ release/omarchy-mac-iso-arm64/. Does not boot a Mac.
 payload) into release/omarchy-mac-iso-usb/. Requires linux-asahi on the host.
 Tiny busybox pid 1, unprivileged.
 
---usb --rootfs: pacstrap Arch `base` (systemd) into the payload instead of
-busybox. Needs root. Not the Omarchy desktop.
+--usb --rootfs: pacstrap Arch `base` plus omarchy-base.packages (the
+script-based install set, including sudo) into the payload instead of
+busybox. Needs root. Live session is still tty autologin, not a
+graphical login.
 EOF
 }
 

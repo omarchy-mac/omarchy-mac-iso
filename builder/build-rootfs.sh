@@ -1,18 +1,22 @@
 #!/bin/bash
 # Usage: build-rootfs.sh <out-payload.img>
-# Pacstrap Arch Linux ARM `base` plus the Omarchy shell (hyprland,
-# quickshell, sddm, omarchy from local tarballs) onto btrfs @ (label
-# OMARCHYLIVE). Needs root. Live session stays multi-user.target /
-# autologin — not a graphical login. Do not pacstrap linux-asahi or
-# asahi-scripts (their hooks mount the host ESP).
+# Pacstrap Arch Linux ARM `base` plus omarchy-base.packages (the same
+# set the script-based install.sh uses) and local omarchy tarballs onto
+# btrfs @ (label OMARCHYLIVE). Needs root. Live session stays
+# multi-user.target / autologin — not a graphical login. Do not
+# pacstrap linux-asahi or asahi-scripts (their hooks mount the host ESP).
 set -euo pipefail
 
 out="$1"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Shell packages no longer fit in 3GiB (base + mesa was ~2.1GiB).
-payload_bytes=${OMARCHY_USB_PAYLOAD_BYTES:-$((8 * 1024 * 1024 * 1024))}
+# Full omarchy-base.packages no longer fits in 8GiB uncompressed. 12GiB
+# plus zstd on the payload still flashes onto a 16GB stick.
+payload_bytes=${OMARCHY_USB_PAYLOAD_BYTES:-$((12 * 1024 * 1024 * 1024))}
 packages_file=$repo_root/configs/usb/rootfs/packages
+skip_file=$repo_root/configs/usb/rootfs/packages-aarch64-skip
 forbidden_packages=(linux-asahi asahi-scripts m1n1 uboot-asahi)
+local_tarball_packages=(omarchy-keyring ttf-jetbrains-mono-nerd-basic omarchy-settings omarchy)
+required_packages=(sudo cryptsetup herdr mise-bin tmux yay)
 
 log() { printf '==> %s\n' "$*" >&2; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -21,29 +25,56 @@ fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 command -v pacstrap >/dev/null || fail "pacstrap not found — pacman -S arch-install-scripts"
 command -v mkfs.btrfs >/dev/null || fail "need btrfs-progs"
 command -v losetup >/dev/null || fail "need losetup"
+grep -q '^\[omarchy-aarch64\]' /etc/pacman.conf \
+  || fail "host /etc/pacman.conf needs [omarchy-aarch64] (same repo the script install uses)"
 
-read_package_list() {
-  local pkg
-  [[ -f $packages_file ]] || fail "missing $packages_file"
+sudo_home=""
+if [[ -n ${SUDO_USER:-} ]]; then
+  sudo_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+fi
+
+read_package_names() {
+  local file=$1 pkg
+  [[ -f $file ]] || return 0
   while read -r pkg; do
     [[ -z $pkg || $pkg == \#* ]] && continue
     printf '%s\n' "$pkg"
-  done <"$packages_file"
+  done <"$file"
 }
 
-for pkg in "${forbidden_packages[@]}"; do
-  if read_package_list | grep -qx "$pkg"; then
-    fail "refusing to pacstrap $pkg (mounts or rewrites the host ESP)"
-  fi
-done
+find_omarchy_tree() {
+  local dir
+  for dir in \
+    ${OMARCHY_PATH:+"$OMARCHY_PATH"} \
+    ${sudo_home:+"$sudo_home/code/omarchy-mac"} \
+    "${repo_root}/../omarchy-mac" \
+    "${HOME}/code/omarchy-mac"; do
+    [[ -f $dir/install/omarchy-base.packages ]] || continue
+    printf '%s\n' "$dir"
+    return 0
+  done
+  return 1
+}
+
+package_in_repos() {
+  pacman -Si --noconfirm "$1" >/dev/null 2>&1
+}
+
+# Arch Linux ARM and omarchy-pkgs-aarch64 use these names.
+remap_package() {
+  case $1 in
+    nvim) printf '%s\n' neovim ;;
+    qemu-user-static-binfmt) printf '%s\n' qemu-user-binfmt ;;
+    hyprland-preview-share-picker) printf '%s\n' hyprland-preview-share-picker-git ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
 
 find_local_pkg() {
-  local name=$1 dir f sudo_home=""
+  local name=$1 dir f newest=""
   # sudo ./bin/omarchy-mac-iso-make sets HOME=/root; tarballs live in
   # the invoking user's ~/.local/share/omarchy/build-output.
-  if [[ -n ${SUDO_USER:-} ]]; then
-    sudo_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
-  fi
+  # ${name}-[0-9]* so "omarchy" does not pick omarchy-keyring / omarchy-settings.
   for dir in \
     ${OMARCHY_LOCAL_PACKAGES:+"$OMARCHY_LOCAL_PACKAGES"} \
     ${sudo_home:+"$sudo_home/.local/share/omarchy/build-output"} \
@@ -51,14 +82,95 @@ find_local_pkg() {
     "${HOME}/.local/share/omarchy/build-output" \
     "${repo_root}/../omarchy-mac/build-output"; do
     [[ -d $dir ]] || continue
-    for f in "$dir"/${name}-*.pkg.tar.*; do
+    newest=""
+    for f in "$dir"/${name}-[0-9]*.pkg.tar.*; do
       [[ -f $f ]] || continue
-      printf '%s\n' "$f"
-      return 0
+      newest=$f
     done
+    if [[ -n $newest ]]; then
+      # Multiple pkgver in one dir: take the last sort -V name.
+      newest=$(printf '%s\n' "$dir"/${name}-[0-9]*.pkg.tar.* | sort -V | tail -n1)
+      printf '%s\n' "$newest"
+      return 0
+    fi
   done
   return 1
 }
+
+sync_package_dbs() {
+  log "Refreshing pacman databases (yay lives in [omarchy-aarch64] edge)"
+  pacman -Sy --noconfirm >/dev/null \
+    || fail "pacman -Sy failed — cannot resolve payload packages against a stale db"
+}
+
+assemble_packages() {
+  local omarchy_tree pkg
+  local -A skip=() seen=() local_ok=()
+  extra_packages=()
+  skipped_packages=()
+  unresolved_packages=()
+
+  omarchy_tree=$(find_omarchy_tree) \
+    || fail "need omarchy-mac with install/omarchy-base.packages (set OMARCHY_PATH)"
+  log "Omarchy package lists from $omarchy_tree"
+
+  while read -r pkg; do
+    skip[$pkg]=1
+  done < <(read_package_names "$omarchy_tree/install/omarchy-aarch64-unavailable.packages")
+  while read -r pkg; do
+    skip[$pkg]=1
+  done < <(read_package_names "$skip_file")
+  skip[gpu-screen-recorder]=1
+  for pkg in "${forbidden_packages[@]}"; do
+    skip[$pkg]=1
+  done
+  for pkg in "${local_tarball_packages[@]}"; do
+    local_ok[$pkg]=1
+  done
+
+  while read -r pkg; do
+    pkg=$(remap_package "$pkg")
+    [[ -n ${seen[$pkg]:-} ]] && continue
+    seen[$pkg]=1
+    if [[ -n ${skip[$pkg]:-} ]]; then
+      skipped_packages+=("$pkg")
+      continue
+    fi
+    if [[ -n ${local_ok[$pkg]:-} ]]; then
+      find_local_pkg "$pkg" >/dev/null \
+        || fail "local tarball $pkg-*.pkg.tar.* not found (set OMARCHY_LOCAL_PACKAGES)"
+      continue
+    fi
+    if ! package_in_repos "$pkg"; then
+      unresolved_packages+=("$pkg")
+      continue
+    fi
+    extra_packages+=("$pkg")
+  done < <(
+    read_package_names "$packages_file"
+    read_package_names "$omarchy_tree/install/omarchy-base.packages"
+  )
+
+  (( ${#unresolved_packages[@]} == 0 )) \
+    || fail "not in configured repos: ${unresolved_packages[*]} (add a remap, a local tarball, or packages-aarch64-skip)"
+  (( ${#extra_packages[@]} > 0 )) || fail "no packages resolved for the USB payload"
+  for pkg in "${required_packages[@]}"; do
+    printf '%s\n' "${extra_packages[@]}" | grep -qx "$pkg" \
+      || fail "required package $pkg was not resolved from repos"
+  done
+  if (( ${#skipped_packages[@]} > 0 )); then
+    log "skipped ${#skipped_packages[@]} packages: ${skipped_packages[*]}"
+  fi
+}
+
+for pkg in "${forbidden_packages[@]}"; do
+  if read_package_names "$packages_file" | grep -qx "$pkg"; then
+    fail "refusing to pacstrap $pkg (mounts or rewrites the host ESP)"
+  fi
+done
+
+sync_package_dbs
+assemble_packages
 
 loop=""
 mnt=""
@@ -85,7 +197,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-work="$(mktemp -d)"
+# Mount scratch only. The payload image itself is $out (the USB builder
+# puts that under /var/tmp so it is not on tmpfs).
+work="$(mktemp -d -p /var/tmp omarchy-mac-iso-rootfs.XXXXXX)"
 mnt="$work/mnt"
 mkdir -p "$mnt" "$work/root/@" "$work/root/@home" "$work/root/@log"
 printf 'omarchy-mac-live-ok rootfs %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -102,7 +216,7 @@ mkfs.btrfs -q -L OMARCHYLIVE --csum crc32c \
   "$out"
 
 loop="$(losetup -f --show "$out")"
-mount -o subvol=@ "$loop" "$mnt"
+mount -o subvol=@,compress=zstd:1 "$loop" "$mnt"
 
 # Isolate the chroot so alpm hooks cannot mount the host ESP
 # (/run/.system-efi → nvme0n1p4). Do not pacstrap asahi-scripts or
@@ -114,8 +228,7 @@ mkdir -p "$mnt/run" "$mnt/boot"
 mount -t tmpfs tmpfs "$mnt/run"
 mount -t tmpfs tmpfs "$mnt/boot"
 
-mapfile -t extra_packages < <(read_package_list)
-log "pacstrap base networkmanager iwd mesa asahi-audio gum + ${extra_packages[*]}"
+log "pacstrap base networkmanager iwd mesa asahi-audio gum + ${#extra_packages[@]} packages"
 pacstrap -c "$mnt" base networkmanager iwd mesa asahi-audio \
   alsa-ucm-conf-asahi speakersafetyd pipewire-pulse gum \
   parted gptfdisk btrfs-progs dosfstools grub \
@@ -145,6 +258,13 @@ log "Copying host modules $kver (match ESP vmlinuz)"
 mkdir -p "$mnt/usr/lib/modules"
 cp -a "/usr/lib/modules/$kver" "$mnt/usr/lib/modules/"
 [[ -d $mnt/usr/lib/modules/$kver ]] || fail "failed to copy modules for $kver"
+
+# Same drop-in bootstrap.sh / omarchy-provision-owner write. Arch `base`
+# comments %wheel out of /etc/sudoers; without this, pacstrap'd sudo cannot
+# elevate the desktop user after install.
+install -d -m750 "$mnt/etc/sudoers.d"
+printf '%%wheel ALL=(ALL:ALL) ALL\n' >"$mnt/etc/sudoers.d/00-omarchy-wheel"
+chmod 440 "$mnt/etc/sudoers.d/00-omarchy-wheel"
 
 install -m644 "$repo_root/configs/usb/rootfs/issue" "$mnt/etc/issue"
 install -d "$mnt/etc/systemd/system"
@@ -185,11 +305,22 @@ install -m644 "$repo_root/configs/usb-initcpio/install/omarchy-usb-wait" \
   "$mnt/usr/local/share/omarchy-mac-iso/initcpio/install/omarchy-usb-wait"
 # asahi-scripts is not pacstrapped (its alpm hooks mount the host ESP).
 # Copy only what mkinitcpio needs to build an installed-USB initramfs.
-[[ -f /usr/lib/initcpio/hooks/asahi ]] || fail "host asahi initcpio hook missing"
-install -m644 /usr/lib/initcpio/hooks/asahi \
+# ISO-installed desktops keep the hook under the share path, not
+# /usr/lib/initcpio.
+asahi_initcpio=""
+for dir in /usr/lib/initcpio /usr/local/share/omarchy-mac-iso/initcpio; do
+  [[ -f $dir/hooks/asahi && -f $dir/install/asahi ]] || continue
+  asahi_initcpio=$dir
+  break
+done
+[[ -n $asahi_initcpio ]] \
+  || fail "asahi initcpio hook missing (looked in /usr/lib/initcpio and /usr/local/share/omarchy-mac-iso/initcpio)"
+install -m644 "$asahi_initcpio/hooks/asahi" \
   "$mnt/usr/local/share/omarchy-mac-iso/initcpio/hooks/asahi"
-install -m644 /usr/lib/initcpio/install/asahi \
+install -m644 "$asahi_initcpio/install/asahi" \
   "$mnt/usr/local/share/omarchy-mac-iso/initcpio/install/asahi"
+[[ -d /usr/share/asahi-scripts ]] \
+  || fail "host /usr/share/asahi-scripts missing"
 mkdir -p "$mnt/usr/share"
 cp -a /usr/share/asahi-scripts "$mnt/usr/share/asahi-scripts"
 install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-usb-ready.service" \

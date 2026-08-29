@@ -1,31 +1,44 @@
 #!/bin/bash
 # Update a plugged-in live USB (OMARCHYLIVE + OMARCHYISO) and/or a
 # wipe-installed USB (OMARCHYBOOT). Rebuilds the live initrd and the
-# install initrd. Does not need an 8.6G --usb --rootfs rebuild.
+# install initrd. Does not add omarchy-base.packages; that needs
+# --usb --rootfs.
 set -euo pipefail
 (( EUID == 0 )) || { echo "run as root: sudo $0"; exit 1; }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 find_labelled() {
-  local want=$1 d label
-  for d in /dev/sda1 /dev/sda2 /dev/sdb1 /dev/sdb2 /dev/sdc1 /dev/sdc2; do
-    [[ -b $d ]] || continue
-    label=$(blkid -s LABEL -o value "$d" 2>/dev/null || true)
-    [[ $label == "$want" ]] || continue
-    printf '%s\n' "$d"
-    return 0
-  done
-  return 1
+  local want=$1 d
+  d=$(readlink -f "/dev/disk/by-label/$want" 2>/dev/null || true)
+  [[ -n $d && -b $d ]] && { printf '%s\n' "$d"; return 0; }
+  d=$(blkid -L "$want" 2>/dev/null || true)
+  [[ -n $d && -b $d ]] || return 1
+  printf '%s\n' "$d"
 }
 
-live=$(find_labelled OMARCHYLIVE || true)
-iso=$(find_labelled OMARCHYISO || true)
-boot=$(find_labelled OMARCHYBOOT || true)
+probe_usb_labels() {
+  live=$(find_labelled OMARCHYLIVE || true)
+  iso=$(find_labelled OMARCHYISO || true)
+  boot=$(find_labelled OMARCHYBOOT || true)
+}
+
+live="" iso="" boot=""
+probe_usb_labels
+if [[ -z $live && -z $iso && -z $boot ]]; then
+  echo "==> no USB labels yet; waiting for udev"
+  command -v udevadm >/dev/null && udevadm settle --timeout=10 || true
+  sleep 2
+  probe_usb_labels
+fi
 system_initrd=""
 [[ -f /boot/EFI/omarchy/initramfs.img ]] && system_initrd=/boot/EFI/omarchy/initramfs.img
 [[ -n $live || -n $boot || -n $system_initrd ]] \
   || { echo "error: plug in the live USB, an installed USB, or run this on a machine with /boot/EFI/omarchy/initramfs.img"; exit 1; }
+echo "==> targets: live=${live:-none} iso=${iso:-none} boot=${boot:-none} system=${system_initrd:-none}"
+if [[ -z $live && -z $iso && -z $boot ]]; then
+  echo "==> no USB labels found; only refreshing $system_initrd"
+fi
 
 mounted=()
 cleanup() {
@@ -40,7 +53,14 @@ trap cleanup EXIT
 mount_if_needed() {
   local dev=$1
   local mnt
-  mnt=$(findmnt -n -o TARGET "$dev" || true)
+  # First existing mount whose source is still this device. A leftover
+  # udisks dir (OMARCHYLIVE vs OMARCHYLIVE1) can point at a missing disk.
+  mnt=$(findmnt -n -o TARGET "$dev" 2>/dev/null | while read -r t; do
+    [[ -d $t ]] || continue
+    findmnt -n "$t" >/dev/null || continue
+    printf '%s\n' "$t"
+    break
+  done)
   if [[ -z $mnt ]]; then
     mnt=$(mktemp -d)
     mount "$dev" "$mnt"
@@ -103,11 +123,31 @@ fi
 
 out=/tmp/initramfs-omarchy-usb-root.img
 kver=$(uname -r)
+command -v mkinitcpio >/dev/null \
+  || { echo "error: mkinitcpio not found — sudo pacman -S mkinitcpio, then re-run"; exit 1; }
+
+# asahi-scripts is not pacstrapped (its alpm hooks mount the host ESP). The
+# ISO copies the asahi initcpio hook to this share on the payload, and an
+# ISO-installed desktop has the same path. /usr/lib/initcpio only has it
+# when asahi-scripts is installed.
+mkinitcpio_dirs=(-D /usr/lib/initcpio -D "$repo_root/configs/usb-initcpio")
+asahi_hook=""
+for dir in \
+  /usr/lib/initcpio \
+  /usr/local/share/omarchy-mac-iso/initcpio \
+  ${mnt:+"$mnt/usr/local/share/omarchy-mac-iso/initcpio"}; do
+  [[ -f $dir/hooks/asahi ]] || continue
+  asahi_hook=$dir/hooks/asahi
+  [[ $dir == /usr/lib/initcpio ]] || mkinitcpio_dirs+=(-D "$dir")
+  break
+done
+[[ -n $asahi_hook ]] \
+  || { echo "error: asahi mkinitcpio hook not found (looked in /usr/lib/initcpio and /usr/local/share/omarchy-mac-iso/initcpio)"; exit 1; }
+
 echo "==> mkinitcpio install initrd (plymouth then encrypt)"
 mkinitcpio -n \
   -c "$repo_root/configs/usb-initcpio/mkinitcpio-install.conf" \
-  -D /usr/lib/initcpio \
-  -D "$repo_root/configs/usb-initcpio" \
+  "${mkinitcpio_dirs[@]}" \
   -k "$kver" \
   -g "$out"
 
@@ -119,8 +159,7 @@ if [[ -n $iso ]]; then
   echo "==> mkinitcpio live initrd (quiet console before switch_root)"
   mkinitcpio -n \
     -c "$repo_root/configs/usb-initcpio/mkinitcpio.conf" \
-    -D /usr/lib/initcpio \
-    -D "$repo_root/configs/usb-initcpio" \
+    "${mkinitcpio_dirs[@]}" \
     -k "$kver" \
     -g "$live_out"
   cp -a "$live_out" "$iso_mnt/initramfs-omarchy-usb.img"

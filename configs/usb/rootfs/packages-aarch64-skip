@@ -1,0 +1,14 @@
+# Names from omarchy-base.packages with no aarch64 package in any repo
+# this builder uses (after remaps). Documented skip, not a silent drop:
+# anything else missing from repos fails the payload build.
+#
+# Drop a line here once omarchy-pkgs-aarch64 (or extra) publishes it.
+
+# Apple Studio Display brightness helper. AUR/x86 Omarchy only so far.
+asdcontrol
+
+# LazyVim tree from omarchy-pkgs. neovim still ships; this is the config.
+omarchy-nvim
+
+# Omarchy try/work helper. No aarch64 package yet.
+tobi-try

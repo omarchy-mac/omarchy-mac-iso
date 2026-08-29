@@ -7,6 +7,9 @@
 # as success when a UUID is set: NVMe hole installs use that label too.
 
 hang() {
+  if command -v plymouth >/dev/null 2>&1; then
+    plymouth quit 2>/dev/null || true
+  fi
   echo "==> $*" >/dev/console
   echo "==> $*"
   while true; do
