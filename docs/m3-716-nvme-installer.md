@@ -1,6 +1,10 @@
 # M3 Air — 7.1.6 NVMe installer test
 
+First metal pass (2026-09-03): LUKS free-space install, then consume grew `OMARCHYROOT` 119.7G → 131.7G. APFS / Recovery stayed. Display was `simpledrm`.
+
 Use this as a **checklist on the Mac** or as a **prompt for an agent sitting with you**. It is only the no-USB installer layout (hole + `omarchy-install` + TUI + consume). It is **not** the 7.2 / `apple-drm` display install.
+
+The tree now auto-names the NVMe payload `omarchy-install` and own-modes GRUB when that slice is the live source. A payload built **before** that still needs the hand `parted name` and a `grub.cfg` that lists the new root first (this GRUB did not show `custom.cfg` entries).
 
 The current Linux root on the Air is disposable. 7.2 / `appledrm` already lives on the builder (`~/code/research/j613/` and `linux-asahi`). Wipe **only** the Linux slice(s). Keep macOS, Recovery, and the Asahi ESP (`m1n1/` / `vendorfw/` / `asahi/`).
 
@@ -132,15 +136,13 @@ Stop if the script says `m1n1/vendorfw/asahi changed`.
 
 Wi-Fi: nmtui **Rescan** a few times, then Activate. Firmware comes from the internal ESP; the stick/payload does not ship it.
 
-macOS cannot set GPT names (`gpt label` is EPERM). **This 7.1.6 payload** needs one hand command before Install:
+macOS cannot set GPT names (`gpt label` is EPERM). Images from this PR run `ensure_installer_partlabel` in the TUI. An older payload still needs:
 
 ```bash
 lsblk -o NAME,SIZE,LABEL,PARTLABEL
 sudo parted /dev/nvme0n1 name 5 omarchy-install
 lsblk -o NAME,PARTLABEL
 ```
-
-Later images do that in the TUI (`ensure_installer_partlabel`). Consume also names a leftover `OMARCHYLIVE` if the GPT name is still empty.
 
 ## TUI choices
 
