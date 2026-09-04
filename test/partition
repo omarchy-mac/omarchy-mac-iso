@@ -78,6 +78,85 @@ else
 fi
 rm -f "$img2"
 
+read -r rs rsz is isz <<<"$(split_hole_for_tail_installer "$hole_start" "$hole_size" 1500)"
+check "tail installer sits at the end of the hole" \
+  "(( $is + $isz == $hole_start + $hole_size ))"
+check "leading hole is large enough to copy into" "(( $rsz >= $MIN_FREE_MIB ))"
+check "installer size is the requested tail" "(( $isz == 1500 ))"
+
+img_nvme=$(mktemp)
+truncate -s 8G "$img_nvme"
+parted -s "$img_nvme" mklabel gpt \
+  mkpart iBoot 1MiB 501MiB \
+  mkpart APFS 501MiB 2501MiB \
+  mkpart ESP 2501MiB 3001MiB \
+  mkpart Recovery 6500MiB 8191MiB
+parted -s "$img_nvme" type 1 "$APPLE_IBOOT"
+parted -s "$img_nvme" type 2 "$APPLE_APFS"
+parted -s "$img_nvme" type 4 "$APPLE_RECOVERY"
+region=$(largest_free_region "$img_nvme")
+read -r hole_start hole_size <<<"$region"
+read -r rs rsz is isz <<<"$(split_hole_for_tail_installer "$hole_start" "$hole_size" 1500)"
+parted -s "$img_nvme" mkpart root btrfs "${rs}MiB" "$((rs + rsz))MiB"
+parted -s "$img_nvme" mkpart omarchy-install btrfs "${is}MiB" "$((is + isz))MiB"
+num=$(find_part_number_by_name "$img_nvme" "$INSTALLER_PARTLABEL")
+check "GPT name omarchy-install is findable" "[[ -n '$num' ]]"
+if delete_installer_partition "$img_nvme" Recovery 2>/dev/null; then
+  printf 'FAIL - delete_installer_partition must refuse Recovery\n'
+  failures=$((failures + 1))
+else
+  printf 'ok   - delete_installer_partition refuses Recovery\n'
+fi
+before_types=$(sfdisk --dump "$img_nvme")
+delete_installer_partition "$img_nvme"
+check "installer GPT name is gone after consume" \
+  "! find_part_number_by_name '$img_nvme' '$INSTALLER_PARTLABEL'"
+root_num=$(find_part_number_by_name "$img_nvme" root)
+grow_partition_into_next_hole "$img_nvme" "$root_num"
+after_types=$(sfdisk --dump "$img_nvme")
+check "iBoot type survives consume/grow" "grep -qi '$APPLE_IBOOT' <<<'$(printf '%s' "$after_types")'"
+check "APFS type survives consume/grow" "grep -qi '$APPLE_APFS' <<<'$(printf '%s' "$after_types")'"
+check "Recovery type survives consume/grow" "grep -qi '$APPLE_RECOVERY' <<<'$(printf '%s' "$after_types")'"
+read -r _ root_end <<<"$(part_start_end_mib "$img_nvme" "$root_num")"
+check "root grew past the old installer start" "(( $root_end > $is ))"
+rm -f "$img_nvme"
+
+if ! split_hole_for_tail_installer 3000 100 80 >/dev/null; then
+  printf 'ok   - split refuses a hole too small for installer plus root\n'
+else
+  printf 'FAIL - split should refuse a tiny hole\n'
+  failures=$((failures + 1))
+fi
+
+img_name=$(mktemp)
+truncate -s 8G "$img_name"
+parted -s "$img_name" mklabel gpt \
+  mkpart iBoot 1MiB 501MiB \
+  mkpart payload 501MiB 2501MiB
+parted -s "$img_name" type 1 "$APPLE_IBOOT"
+parted -s "$img_name" name 2 payload
+if ensure_installer_partlabel "$img_name" 2>/dev/null; then
+  printf 'FAIL - ensure_installer_partlabel must not rename an image path\n'
+  failures=$((failures + 1))
+else
+  printf 'ok   - ensure_installer_partlabel ignores a non-block image\n'
+fi
+parted -s "$img_name" name 2 "$INSTALLER_PARTLABEL"
+named=$(find_part_number_by_name "$img_name" "$INSTALLER_PARTLABEL" || true)
+if [[ $named == 2 ]]; then
+  printf 'ok   - parted can set GPT name omarchy-install\n'
+else
+  printf 'FAIL - parted can set GPT name omarchy-install\n'
+  failures=$((failures + 1))
+fi
+if delete_installer_partition "$img_name" iBoot 2>/dev/null; then
+  printf 'FAIL - must not delete iBoot by a spoofed name\n'
+  failures=$((failures + 1))
+else
+  printf 'ok   - delete still refuses any name except omarchy-install\n'
+fi
+rm -f "$img_name"
+
 if (( failures > 0 )); then
   echo "${failures} partition test failure(s)"
   exit 1

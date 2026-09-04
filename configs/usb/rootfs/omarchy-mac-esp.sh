@@ -9,7 +9,10 @@ esp_has_bootloader() {
 
 esp_protected_hashes() {
   local esp_mnt=$1
-  (cd "$esp_mnt" && find asahi m1n1 vendorfw EFI/asahi -type f 2>/dev/null | sort | xargs -r sha256sum) || true
+  # boot.bin is the one m1n1 file the j613 DCP slot patch may change.
+  # vendorfw/, asahi/, and the rest of m1n1/ must stay byte-identical.
+  (cd "$esp_mnt" && find asahi m1n1 vendorfw EFI/asahi -type f \
+    ! -name boot.bin ! -name 'boot.bin.bak*' 2>/dev/null | sort | xargs -r sha256sum) || true
 }
 
 # Copy an existing ESP file to *.omarchy-bak next to it (on the ESP, so
@@ -51,13 +54,17 @@ esp_require_free_bytes() {
 # Drop the legacy ESP-root names from earlier installs; do not bak
 # EFI/omarchy/ — those files are ours and ~50MiB each copy.
 esp_copy_unique_kernels() {
-  local live_esp_mnt=$1 esp_mnt=$2
+  local live_esp_mnt=$1 esp_mnt=$2 luks_uuid=${3:-}
+  local initrd=$live_esp_mnt/initramfs-linux-asahi.img
   [[ -f $live_esp_mnt/vmlinuz-linux-asahi ]] || return 1
-  [[ -f $live_esp_mnt/initramfs-linux-asahi.img ]] || return 1
+  if [[ -z $luks_uuid && -f $live_esp_mnt/initramfs-linux-asahi-plain.img ]]; then
+    initrd=$live_esp_mnt/initramfs-linux-asahi-plain.img
+  fi
+  [[ -f $initrd ]] || return 1
   esp_require_free_bytes "$esp_mnt" || return 1
   mkdir -p "$esp_mnt/EFI/omarchy"
   cp "$live_esp_mnt/vmlinuz-linux-asahi" "$esp_mnt/EFI/omarchy/vmlinuz"
-  cp "$live_esp_mnt/initramfs-linux-asahi.img" "$esp_mnt/EFI/omarchy/initramfs.img"
+  cp "$initrd" "$esp_mnt/EFI/omarchy/initramfs.img"
   rm -f "$esp_mnt/vmlinuz-omarchy-usb-root" \
     "$esp_mnt/initramfs-omarchy-usb-root.img"
 }
@@ -66,10 +73,10 @@ esp_copy_unique_kernels() {
 root_linux_args() {
   local root_uuid=$1 luks_uuid=${2:-}
   if [[ -n $luks_uuid ]]; then
-    printf 'root=UUID=%s rw rootflags=subvol=@ cryptdevice=UUID=%s:root:allow-discards loglevel=3 quiet splash' \
+    printf 'root=UUID=%s rw rootflags=subvol=@ cryptdevice=UUID=%s:root:allow-discards appledrm.show_notch=1 loglevel=3 quiet splash' \
       "$root_uuid" "$luks_uuid"
   else
-    printf 'root=UUID=%s rw rootflags=subvol=@ loglevel=3 quiet splash' "$root_uuid"
+    printf 'root=UUID=%s rw rootflags=subvol=@ appledrm.show_notch=1 loglevel=3 quiet splash' "$root_uuid"
   fi
 }
 
@@ -106,8 +113,10 @@ EOF
 
 # Piggyback on an OS that already owns BOOTAA64.EFI (custom.cfg only).
 # $3 is the LUKS UUID when the new root is encrypted.
+# $4 is 1 to keep the existing GRUB default (free-space next to a live
+# root). 0 rewrites default to this UUID (replace-existing; old fs gone).
 write_piggyback_esp_grub() {
-  local esp_mnt=$1 root_uuid=$2 luks_uuid=${3:-}
+  local esp_mnt=$1 root_uuid=$2 luks_uuid=${3:-} keep_grub_default=${4:-0}
   local linux_args entry_title
   linux_args=$(root_linux_args "$root_uuid" "$luks_uuid")
   entry_title="Omarchy Mac (new root $root_uuid)"
@@ -115,19 +124,24 @@ write_piggyback_esp_grub() {
   esp_backup_existing "$esp_mnt" grub/custom.cfg || return 1
   esp_backup_existing "$esp_mnt" grub/grub.cfg || return 1
   : >"$esp_mnt/omarchy-mac-root"
-  # 10_linux still owns default=0 (the previous root UUID). After a
-  # reinstall that filesystem is gone; boot this entry instead.
   {
-    printf "set default='%s'\nset timeout=8\n" "$entry_title"
+    printf 'set timeout=8\n'
+    if (( keep_grub_default == 0 )); then
+      # 10_linux still owns default=0 (the previous root UUID). After a
+      # reinstall that filesystem is gone; boot this entry instead.
+      printf "set default='%s'\n" "$entry_title"
+    fi
     grub_root_menu_entries "$entry_title" "$linux_args" 1
   } >"$esp_mnt/grub/custom.cfg"
   if [[ -f $esp_mnt/grub/grub.cfg ]] && ! grep -q custom.cfg "$esp_mnt/grub/grub.cfg"; then
     printf '\nif [ -f /grub/custom.cfg ]; then source /grub/custom.cfg; fi\n' \
       >>"$esp_mnt/grub/grub.cfg"
   fi
-  # Own-mode leftover: default=0 still boots 'Omarchy Mac' with the previous
-  # root UUID. Rewrite that linux line so an unattended boot hits the new root.
-  if [[ -f $esp_mnt/grub/grub.cfg ]] && grep -q '/EFI/omarchy/vmlinuz' "$esp_mnt/grub/grub.cfg"; then
+  # Replace-existing only: own-mode leftover default=0 still boots
+  # 'Omarchy Mac' with the previous UUID. Do not do this for a second
+  # hole — that rewrite is what stole boot from the original install.
+  if (( keep_grub_default == 0 )) &&
+    [[ -f $esp_mnt/grub/grub.cfg ]] && grep -q '/EFI/omarchy/vmlinuz' "$esp_mnt/grub/grub.cfg"; then
     sed -i "s|^[[:space:]]*linux /EFI/omarchy/vmlinuz .* quiet splash|  linux /EFI/omarchy/vmlinuz $linux_args|" \
       "$esp_mnt/grub/grub.cfg"
   fi

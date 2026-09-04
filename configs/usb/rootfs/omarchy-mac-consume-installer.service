@@ -1,0 +1,12 @@
+[Unit]
+Description=Remove temporary Omarchy NVMe installer partition and grow root
+After=local-fs.target
+ConditionPathExists=!/omarchy-mac-overlay-write
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/omarchy-mac-consume-installer
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

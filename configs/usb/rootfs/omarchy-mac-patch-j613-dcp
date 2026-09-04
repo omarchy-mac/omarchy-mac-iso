@@ -1,0 +1,60 @@
+#!/bin/bash
+# Patch the j613 DTB slot in an already-provisioned m1n1 boot.bin so
+# appledrm can bind. Does not replace boot.bin, vendorfw/, or asahi/.
+# Missing fdtoverlay / non-j613 / already-patched: skip, do not fail install.
+set -euo pipefail
+
+SHARE=/usr/local/share/omarchy-mac-iso
+here=$(cd "$(dirname "$0")" && pwd)
+
+is_j613() {
+  local dt=/sys/firmware/devicetree/base/compatible
+  [[ -f $dt ]] || return 1
+  grep -aq 'apple,j613' "$dt"
+}
+
+patch_boot_bin() {
+  local boot_bin=$1
+  local py dtbo
+  py=$SHARE/m1n1/patch-boot-bin-dcp.py
+  [[ -f $py ]] || py=$here/../../m1n1/patch-boot-bin-dcp.py
+  dtbo=$SHARE/m1n1/j613-dcp.dtbo
+  [[ -f $dtbo ]] || dtbo=$here/../../m1n1/j613-dcp.dtbo
+  [[ -f $boot_bin ]] || return 1
+  [[ -f $py && -f $dtbo ]] || {
+    printf '==> j613 DCP overlay not on this payload; skipping m1n1 patch\n'
+    return 0
+  }
+  command -v python3 >/dev/null || {
+    printf '==> python3 missing; skipping j613 DCP patch\n'
+    return 0
+  }
+  command -v fdtoverlay >/dev/null || {
+    printf '==> fdtoverlay missing (dtc); skipping j613 DCP patch — M3 stays on simpledrm until refresh\n'
+    return 0
+  }
+  python3 "$py" --boot-bin "$boot_bin" --dtbo "$dtbo" --write
+}
+
+if [[ ${1:-} == --self-test ]]; then
+  python3 "${SHARE:-$here/../../m1n1}/m1n1/patch-boot-bin-dcp.py" --self-test 2>/dev/null \
+    || python3 "$here/../../m1n1/patch-boot-bin-dcp.py" --self-test
+  exit 0
+fi
+
+if [[ ${1:-} == --esp ]]; then
+  esp_mnt=$2
+  is_j613 || {
+    printf '==> not apple,j613; leaving m1n1/boot.bin\n'
+    exit 0
+  }
+  [[ -f $esp_mnt/m1n1/boot.bin ]] || {
+    printf '==> no m1n1/boot.bin on this ESP; skipping DCP patch\n'
+    exit 0
+  }
+  patch_boot_bin "$esp_mnt/m1n1/boot.bin"
+  exit 0
+fi
+
+printf 'usage: omarchy-mac-patch-j613-dcp --esp MOUNTPOINT\n' >&2
+exit 2

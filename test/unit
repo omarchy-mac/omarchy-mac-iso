@@ -65,6 +65,8 @@ check "usb rootimg copies initcpio busybox" grep -q /usr/lib/initcpio/busybox \
   "${repo_root}/builder/build-usb-rootimg.sh"
 check "usb image builds a payload partition" grep -q 'mkpart payload' \
   "${repo_root}/builder/build-usb-image.sh"
+check "usb image copies Omarchy piggyback vmlinuz" grep -q '/boot/EFI/omarchy/vmlinuz' \
+  "${repo_root}/builder/build-usb-image.sh"
 check "rootfs pacstraps networkmanager and iwd" grep -q networkmanager \
   "${repo_root}/builder/build-rootfs.sh"
 check "NM live conf disables polkit auth" grep -q 'auth-polkit=false' \
@@ -269,6 +271,128 @@ check "installer stubs omarchy-pkg-add in the target chroot" grep -q \
 check "ISO chroot skips pre-installing 1Password" grep -q \
   'ISO chroot skips 1Password' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "ISO chroot skips mise without a bundled Node tarball" grep -q \
+  'ISO chroot skips mise' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "ISO chroot stubs live outside /tmp" grep -q \
+  'usr/local/share/omarchy-mac-iso' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "free-space piggyback keeps the existing GRUB default" grep -q \
+  'keep_grub_default=1' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "free-space NVMe installer replaces the temporary live GRUB" grep -q \
+  'force_own=1' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "free-space apply_system_esp_bootloader passes keep and force flags" grep -q \
+  'apply_system_esp_bootloader "$esp_part" "$root_uuid" "$source_esp" "$luks_uuid" "$keep_grub_default" "$force_own"' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "free-space does not skip an NVMe live disk" \
+  bash -c 'awk "/^install_into_free_space\\(\\)/,/^existing_root_row/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q "disk_is_nvme \"\$name\""'
+check "free-space skip is USB-only" \
+  bash -c 'awk "/^install_into_free_space\\(\\)/,/^existing_root_row/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q "An NVMe installer slice must see the"'
+check "consume deletes only omarchy-install" grep -q \
+  'name == "$INSTALLER_PARTLABEL" ]] || return 1' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-disk.sh"
+check "live TUI names the NVMe payload omarchy-install" grep -q \
+  ensure_installer_partlabel \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "consume finds leftover OMARCHYLIVE if GPT name is empty" grep -q \
+  omarchy_live_payload_on \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-consume-installer"
+check "consume walks LUKS via dm slaves not lsblk PKNAME" grep -q \
+  '/sys/class/block/$kname/slaves' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-consume-installer"
+check "macos placer falls back when gpt label is EPERM" grep -q \
+  'live TUI will name the slice' \
+  "${repo_root}/scripts/macos/place-nvme-installer.sh"
+check "live hook prefers GPT name omarchy-install" grep -q \
+  'by-partlabel/"$INSTALLER_PARTLABEL"' \
+  "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-live"
+check "live hook still mounts OMARCHYLIVE subvol=@" grep -q \
+  'PAYLOAD_LABEL="OMARCHYLIVE"' \
+  "${repo_root}/configs/usb-initcpio/hooks/omarchy-usb-live"
+check "NVMe installer GRUB uses the live initrd" grep -q \
+  initramfs-omarchy-usb.img \
+  "${repo_root}/configs/usb/grub-nvme-installer.cfg"
+check "usb image ships NVMe installer GRUB next to BOOTAA64" grep -q \
+  grub-nvme-installer.cfg \
+  "${repo_root}/builder/build-usb-image.sh"
+check "usb image makes initrds copyable off the builder" grep -q \
+  'chmod a+r "$out_dir"/initramfs-' \
+  "${repo_root}/builder/build-usb-image.sh"
+check "refresh-live copies the consume-installer script" grep -q \
+  omarchy-mac-consume-installer \
+  "${repo_root}/bin/omarchy-mac-iso-refresh-live"
+check "rootfs installs consume-installer" grep -q \
+  omarchy-mac-consume-installer \
+  "${repo_root}/builder/build-rootfs.sh"
+check "installer seeds consume on the NVMe target" grep -q \
+  seed_installer_consume \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "consume refuses to run on the live overlay" grep -q \
+  omarchy-mac-overlay-write \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-consume-installer"
+check "consume never uses resizepart 100%" \
+  bash -c '! grep -q "resizepart .*100%" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-disk.sh" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-consume-installer"'
+check "macOS placer puts omarchy-install at the tail" grep -qF \
+  'installer_start=$(( hole_end - installer_sectors ))' \
+  "${repo_root}/scripts/macos/place-nvme-installer.sh"
+check "macOS placer does not shrink APFS" \
+  bash -c '! grep -qE "apfs resize|diskutil apfs" "'"${repo_root}"'/scripts/macos/place-nvme-installer.sh"'
+check "macOS placer refuses rdisk as --disk" grep -q \
+  'use diskN not rdiskN' \
+  "${repo_root}/scripts/macos/place-nvme-installer.sh"
+check "bash -n omarchy-mac-consume-installer" bash -n \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-consume-installer"
+check "bash -n place-nvme-installer.sh" bash -n \
+  "${repo_root}/scripts/macos/place-nvme-installer.sh"
+check "j613 DCP overlay is in the tree" test -f \
+  "${repo_root}/configs/m1n1/j613-dcp-overlay.dts"
+check "j613 DCP dtbo is in the tree" test -f \
+  "${repo_root}/configs/m1n1/j613-dcp.dtbo"
+check "DCP overlay is not applied via GRUB devicetree" \
+  bash -c '! grep -R --include="*.cfg" -E "^[[:space:]]*devicetree " "'"${repo_root}"'/configs/usb"'
+check "installer does not write extlinux" \
+  bash -c '! grep -R --include="*.sh" extlinux "'"${repo_root}"'/configs/usb/rootfs" "'"${repo_root}"'/builder"'
+check "patch-boot-bin-dcp.py self-test" python3 \
+  "${repo_root}/configs/m1n1/patch-boot-bin-dcp.py" --self-test
+check "j613 DCP patcher only splices the existing slot" grep -q \
+  'bytes outside the j613 slot would change' \
+  "${repo_root}/configs/m1n1/patch-boot-bin-dcp.py"
+check "ESP protected hashes skip m1n1/boot.bin" grep -q \
+  '! -name boot.bin' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
+check "installed GRUB sets appledrm.show_notch=1" grep -q \
+  'appledrm.show_notch=1' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
+check "live GRUB sets appledrm.show_notch=1" grep -q \
+  'appledrm.show_notch=1' \
+  "${repo_root}/configs/usb/grub.cfg"
+check "unencrypted install initrd has no encrypt hook" \
+  bash -c '! grep -E "^HOOKS=.*encrypt" "'"${repo_root}"'/configs/usb-initcpio/mkinitcpio-install-plain.conf"'
+check "LUKS install initrd still has encrypt" grep -q encrypt \
+  "${repo_root}/configs/usb-initcpio/mkinitcpio-install.conf"
+check "usb image builds the plain install initrd" grep -q \
+  initramfs-linux-asahi-plain.img \
+  "${repo_root}/builder/build-usb-image.sh"
+check "unencrypted ESP copy prefers the plain initrd" grep -q \
+  initramfs-linux-asahi-plain.img \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-esp.sh"
+check "usb image refuses 7.1 appledrm without V14_7" grep -q \
+  V14_7 \
+  "${repo_root}/builder/build-usb-image.sh"
+check "rootfs extra packages include dtc" grep -qx dtc \
+  "${repo_root}/configs/usb/rootfs/packages"
+check "installer seeds no_hardware_cursors on t8122" grep -q \
+  no_hardware_cursors \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "installer patches j613 m1n1 after ESP hashes" grep -q \
+  omarchy-mac-patch-j613-dcp \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "bash -n omarchy-mac-patch-j613-dcp" bash -n \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-patch-j613-dcp"
+check "rootfs copies the j613 DCP dtbo" grep -q j613-dcp.dtbo \
+  "${repo_root}/builder/build-rootfs.sh"
 check "installer seeds mkinitcpio.conf for alt-bootloaders" grep -q \
   'seed_target_mkinitcpio_conf' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"

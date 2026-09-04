@@ -253,10 +253,12 @@ install -m644 /etc/pacman.d/mirrorlist.asahi-alarm "$mnt/etc/pacman.d/mirrorlist
 umount "$mnt/boot"
 umount "$mnt/run"
 
-kver=$(uname -r)
-log "Copying host modules $kver (match ESP vmlinuz)"
+kver=${OMARCHY_KVER:-$(uname -r)}
+modules_src=${OMARCHY_MODULES_DIR:-/usr/lib/modules/$kver}
+log "Copying modules $kver from $modules_src (match ESP vmlinuz)"
 mkdir -p "$mnt/usr/lib/modules"
-cp -a "/usr/lib/modules/$kver" "$mnt/usr/lib/modules/"
+[[ -d $modules_src ]] || fail "no modules at $modules_src"
+cp -a "$modules_src" "$mnt/usr/lib/modules/$kver"
 [[ -d $mnt/usr/lib/modules/$kver ]] || fail "failed to copy modules for $kver"
 
 # Same drop-in bootstrap.sh / omarchy-provision-owner write. Arch `base`
@@ -280,6 +282,23 @@ install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-install" \
   "$mnt/usr/local/sbin/omarchy-mac-install"
 install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-live-welcome" \
   "$mnt/usr/local/sbin/omarchy-mac-live-welcome"
+install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-consume-installer" \
+  "$mnt/usr/local/sbin/omarchy-mac-consume-installer"
+install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-consume-installer" \
+  "$mnt/usr/local/share/omarchy-mac-iso/omarchy-mac-consume-installer"
+install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-consume-installer.service" \
+  "$mnt/usr/local/share/omarchy-mac-iso/omarchy-mac-consume-installer.service"
+install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-patch-j613-dcp" \
+  "$mnt/usr/local/sbin/omarchy-mac-patch-j613-dcp"
+install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-patch-j613-dcp" \
+  "$mnt/usr/local/share/omarchy-mac-iso/omarchy-mac-patch-j613-dcp"
+install -d "$mnt/usr/local/share/omarchy-mac-iso/m1n1"
+install -m644 "$repo_root/configs/m1n1/j613-dcp-overlay.dts" \
+  "$mnt/usr/local/share/omarchy-mac-iso/m1n1/j613-dcp-overlay.dts"
+install -m644 "$repo_root/configs/m1n1/j613-dcp.dtbo" \
+  "$mnt/usr/local/share/omarchy-mac-iso/m1n1/j613-dcp.dtbo"
+install -m644 "$repo_root/configs/m1n1/patch-boot-bin-dcp.py" \
+  "$mnt/usr/local/share/omarchy-mac-iso/m1n1/patch-boot-bin-dcp.py"
 install -d "$mnt/root"
 install -m644 "$repo_root/configs/usb/rootfs/root-bash-profile" \
   "$mnt/root/.bash_profile"
@@ -293,6 +312,8 @@ install -d "$mnt/usr/local/share/omarchy-mac-iso/initcpio/hooks"
 install -d "$mnt/usr/local/share/omarchy-mac-iso/initcpio/install"
 install -m644 "$repo_root/configs/usb-initcpio/mkinitcpio-install.conf" \
   "$mnt/usr/local/share/omarchy-mac-iso/mkinitcpio-install.conf"
+install -m644 "$repo_root/configs/usb-initcpio/mkinitcpio-install-plain.conf" \
+  "$mnt/usr/local/share/omarchy-mac-iso/mkinitcpio-install-plain.conf"
 install -m644 "$repo_root/configs/usb/grub-embed.cfg" \
   "$mnt/usr/local/share/omarchy-mac-iso/grub-embed.cfg"
 install -m644 "$repo_root/configs/usb/grub-embed-install.cfg" \
