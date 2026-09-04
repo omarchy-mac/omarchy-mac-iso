@@ -79,16 +79,25 @@ overlay_payload_device() {
 live_partition=""
 if live_partition=$(overlay_payload_device); then
   :
+elif [[ -e /dev/disk/by-partlabel/omarchy-install ]]; then
+  live_partition=$(readlink -f /dev/disk/by-partlabel/omarchy-install)
 elif [[ -e /dev/disk/by-label/OMARCHYLIVE ]]; then
   live_partition=$(readlink -f /dev/disk/by-label/OMARCHYLIVE)
 fi
-[[ -n $live_partition ]] || fail "no OMARCHYLIVE volume — plug in the live USB"
+[[ -n $live_partition ]] || fail "no OMARCHYLIVE / omarchy-install volume — plug in the live USB or boot the NVMe installer slice"
 live_disk=$(lsblk -no PKNAME "$live_partition")
 [[ -n $live_disk ]] || fail "could not find the disk that holds OMARCHYLIVE"
 source_dev=/dev/$live_disk
 running_from_this_live_usb=0
 if overlay=$(overlay_payload_device); then
   [[ $overlay == "$live_partition" ]] && running_from_this_live_usb=1
+fi
+# diskutil cannot gpt label the internal SSD. Name the NVMe live slice
+# before free-space so own-mode GRUB and consume see omarchy-install.
+if disk_is_nvme "$live_disk"; then
+  ensure_installer_partlabel "$live_partition" \
+    || printf '==> could not set GPT name %s on %s (consume may need it later)\n' \
+      "$INSTALLER_PARTLABEL" "$live_partition"
 fi
 
 if [[ ${1:-} == --dry-run ]]; then
@@ -541,24 +550,30 @@ target_chroot_unbind() {
 iso_chroot_stub_binds=()
 
 install_boot_command_stubs() {
-  local root_mnt=$1 cmd dest
-  mkdir -p "$root_mnt/usr/local/sbin" "$root_mnt/tmp"
+  local root_mnt=$1 cmd dest stub_dir
+  # Keep stubs off /tmp: target_chroot_bind mounts a tmpfs there and would
+  # hide files used as bind-mount sources, so optional-apps.sh ran the real
+  # omarchy-install-1password and curl'd with no DNS.
+  stub_dir=$root_mnt/usr/local/share/omarchy-mac-iso
+  mkdir -p "$root_mnt/usr/local/sbin" "$stub_dir"
   printf '#!/bin/bash\n# ISO chroot: packages and the ESP initrd are already on the payload.\nexit 0\n' \
-    >"$root_mnt/tmp/omarchy-iso-chroot-stub"
-  chmod 755 "$root_mnt/tmp/omarchy-iso-chroot-stub"
-  # 1Password is optional and is not pre-installed. optional-apps.sh would
-  # otherwise download it here. The real installer still sets the
-  # onepassword group + setgid on 1Password-BrowserSupport when the user
-  # runs omarchy-install-1password after first boot.
+    >"$stub_dir/omarchy-iso-chroot-stub"
+  chmod 755 "$stub_dir/omarchy-iso-chroot-stub"
   printf '%s\n' \
     '#!/bin/bash' \
     'echo "ISO chroot skips 1Password; install later with omarchy-install-1password"' \
     'exit 0' \
-    >"$root_mnt/tmp/omarchy-iso-chroot-skip-1password"
-  chmod 755 "$root_mnt/tmp/omarchy-iso-chroot-skip-1password"
+    >"$stub_dir/omarchy-iso-chroot-skip-1password"
+  chmod 755 "$stub_dir/omarchy-iso-chroot-skip-1password"
+  printf '%s\n' \
+    '#!/bin/bash' \
+    'echo "ISO chroot skips mise; no bundled Node tarball and the live USB has no DNS"' \
+    'exit 0' \
+    >"$stub_dir/omarchy-iso-chroot-skip-mise"
+  chmod 755 "$stub_dir/omarchy-iso-chroot-skip-mise"
   iso_chroot_stub_binds=()
   for cmd in mkinitcpio grub-mkconfig limine-mkinitcpio; do
-    install -m755 "$root_mnt/tmp/omarchy-iso-chroot-stub" \
+    install -m755 "$stub_dir/omarchy-iso-chroot-stub" \
       "$root_mnt/usr/local/sbin/$cmd"
   done
   for dest in \
@@ -566,14 +581,22 @@ install_boot_command_stubs() {
     "$root_mnt/usr/share/omarchy/bin/omarchy-pkg-aur-add"
   do
     [[ -e $dest ]] || continue
-    mount --bind "$root_mnt/tmp/omarchy-iso-chroot-stub" "$dest"
+    mount --bind "$stub_dir/omarchy-iso-chroot-stub" "$dest"
     iso_chroot_stub_binds+=("$dest")
   done
   dest="$root_mnt/usr/share/omarchy/bin/omarchy-install-1password"
   if [[ -e $dest ]]; then
-    mount --bind "$root_mnt/tmp/omarchy-iso-chroot-skip-1password" "$dest"
+    mount --bind "$stub_dir/omarchy-iso-chroot-skip-1password" "$dest"
     iso_chroot_stub_binds+=("$dest")
   fi
+  for dest in \
+    "$root_mnt/usr/bin/mise" \
+    "$root_mnt/usr/share/omarchy/bin/omarchy-mise-install"
+  do
+    [[ -e $dest ]] || continue
+    mount --bind "$stub_dir/omarchy-iso-chroot-skip-mise" "$dest"
+    iso_chroot_stub_binds+=("$dest")
+  done
 }
 
 remove_boot_command_stubs() {
@@ -585,8 +608,9 @@ remove_boot_command_stubs() {
   rm -f "$root_mnt/usr/local/sbin/mkinitcpio" \
     "$root_mnt/usr/local/sbin/grub-mkconfig" \
     "$root_mnt/usr/local/sbin/limine-mkinitcpio" \
-    "$root_mnt/tmp/omarchy-iso-chroot-stub" \
-    "$root_mnt/tmp/omarchy-iso-chroot-skip-1password"
+    "$root_mnt/usr/local/share/omarchy-mac-iso/omarchy-iso-chroot-stub" \
+    "$root_mnt/usr/local/share/omarchy-mac-iso/omarchy-iso-chroot-skip-1password" \
+    "$root_mnt/usr/local/share/omarchy-mac-iso/omarchy-iso-chroot-skip-mise"
 }
 
 # login/alt-bootloaders.sh greps and copies this. The payload has no linux
@@ -629,6 +653,25 @@ seed_tokyo_night() {
   return 0
 }
 
+# M3 (and any Apple Silicon without an AGX node) has no GPU cursor plane.
+# Hardware cursors are invisible until 3D exists.
+seed_no_hardware_cursors() {
+  local root_mnt=$1 user=$2
+  local dt=/sys/firmware/devicetree/base/compatible
+  local look=$root_mnt/home/$user/.config/hypr/looknfeel.lua
+  grep -aq 'apple,t8122' "$dt" 2>/dev/null || return 0
+  if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
+    printf 'dry-run: Hyprland cursor.no_hardware_cursors for %s\n' "$user"
+    return 0
+  fi
+  mkdir -p "$root_mnt/home/$user/.config/hypr"
+  if [[ -f $look ]] && grep -q no_hardware_cursors "$look"; then
+    return 0
+  fi
+  printf '\nhl.config({ cursor = { no_hardware_cursors = true } })\n' >>"$look"
+  printf '==> Hyprland no_hardware_cursors for %s (no AGX yet)\n' "$user"
+}
+
 # Same sequence as omarchy-mac install.sh after packages: root system
 # setup, then per-user finalize. Leaves first-login toasts to Hyprland
 # autostart (omarchy-provision-first-run: welcome / timezone / Wi-Fi /
@@ -647,9 +690,9 @@ provision_installed_system() {
   [[ -x $root_mnt/usr/bin/omarchy-provision-user ]] \
     || fail "omarchy-provision-user missing — rebuild with --usb --rootfs"
 
-  install_boot_command_stubs "$root_mnt"
   seed_target_mkinitcpio_conf "$root_mnt"
   target_chroot_bind "$root_mnt"
+  install_boot_command_stubs "$root_mnt"
 
   printf '==> omarchy-apply-system --install-user %s --first-install\n' "$user"
   apply_status=0
@@ -679,6 +722,7 @@ provision_installed_system() {
   then
     printf '==> omarchy-provision-user failed for %s; first login will retry\n' "$user"
   fi
+  seed_no_hardware_cursors "$root_mnt" "$user"
 
   target_chroot_unbind
   remove_boot_command_stubs "$root_mnt"
@@ -953,6 +997,8 @@ EOF
 # Prints "piggyback" or "own" to stdout. Caller holds the root mount.
 apply_system_esp_bootloader() {
   local esp_part=$1 root_uuid=$2 source_esp=$3 luks_uuid=${4:-}
+  local keep_grub_default=${5:-0}
+  local force_own=${6:-0}
   local esp_mnt live_esp_mnt
   local esp_mounted_by_us=0 live_esp_mounted_by_us=0
   local before_efi after_efi before_prot after_prot
@@ -971,21 +1017,25 @@ apply_system_esp_bootloader() {
   before_prot=$(esp_protected_hashes "$esp_mnt")
   before_efi=$(sha256sum "$esp_mnt/EFI/BOOT/BOOTAA64.EFI" 2>/dev/null || true)
 
-  live_esp_mnt=$(findmnt -n -o TARGET "$source_esp" || true)
-  if [[ -z $live_esp_mnt ]]; then
-    live_esp_mnt=$(mktemp -d)
-    mount -o ro "$source_esp" "$live_esp_mnt" >/dev/null
-    live_esp_mounted_by_us=1
+  if [[ $source_esp == "$esp_part" ]]; then
+    live_esp_mnt=$esp_mnt
+  else
+    live_esp_mnt=$(findmnt -n -o TARGET "$source_esp" || true)
+    if [[ -z $live_esp_mnt ]]; then
+      live_esp_mnt=$(mktemp -d)
+      mount -o ro "$source_esp" "$live_esp_mnt" >/dev/null
+      live_esp_mounted_by_us=1
+    fi
   fi
-  esp_copy_unique_kernels "$live_esp_mnt" "$esp_mnt" \
+  esp_copy_unique_kernels "$live_esp_mnt" "$esp_mnt" "$luks_uuid" \
     || fail "no vmlinuz/initramfs on live ESP $source_esp"
   if (( live_esp_mounted_by_us == 1 )); then
     umount "$live_esp_mnt"
     rmdir "$live_esp_mnt"
   fi
 
-  if esp_has_bootloader "$esp_mnt"; then
-    write_piggyback_esp_grub "$esp_mnt" "$root_uuid" "$luks_uuid"
+  if (( force_own == 0 )) && esp_has_bootloader "$esp_mnt"; then
+    write_piggyback_esp_grub "$esp_mnt" "$root_uuid" "$luks_uuid" "$keep_grub_default"
     after_efi=$(sha256sum "$esp_mnt/EFI/BOOT/BOOTAA64.EFI" 2>/dev/null || true)
     [[ $before_efi == "$after_efi" ]] || fail "BOOTAA64.EFI changed — aborting"
     mode=piggyback
@@ -996,17 +1046,42 @@ apply_system_esp_bootloader() {
       || fail "could not write System ESP GRUB"
     [[ -f $esp_mnt/EFI/BOOT/BOOTAA64.EFI ]] || fail "BOOTAA64.EFI missing after own-mode write"
     [[ -f $esp_mnt/omarchy-mac-root ]] || fail "omarchy-mac-root marker missing"
+    rm -f "$esp_mnt/omarchy-usb-live"
     mode=own
   fi
 
   after_prot=$(esp_protected_hashes "$esp_mnt")
   [[ $before_prot == "$after_prot" ]] || fail "asahi/m1n1/vendorfw on the ESP changed — aborting"
 
+  patch_j613=$SHARE/omarchy-mac-patch-j613-dcp
+  [[ -x $patch_j613 ]] || patch_j613=$here/omarchy-mac-patch-j613-dcp
+  if [[ -x $patch_j613 ]]; then
+    "$patch_j613" --esp "$esp_mnt" || \
+      printf '==> j613 DCP patch skipped (display stays simpledrm until it succeeds)\n'
+  fi
+
   if (( esp_mounted_by_us == 1 )); then
     umount "$esp_mnt"
     rmdir "$esp_mnt"
   fi
   printf '%s\n' "$mode"
+}
+
+# First boot of the new root deletes GPT name omarchy-install and grows.
+# The running installer cannot delete its own lowerdir.
+seed_installer_consume() {
+  local root_mnt=$1 src unit
+  src=$SHARE/omarchy-mac-consume-installer
+  [[ -f $src ]] || src=$here/omarchy-mac-consume-installer
+  unit=$SHARE/omarchy-mac-consume-installer.service
+  [[ -f $unit ]] || unit=$here/omarchy-mac-consume-installer.service
+  [[ -f $src && -f $unit ]] || fail "missing omarchy-mac-consume-installer (rebuild or refresh-live)"
+  install -d "$root_mnt/usr/local/sbin" "$root_mnt/etc/systemd/system/multi-user.target.wants"
+  install -m755 "$src" "$root_mnt/usr/local/sbin/omarchy-mac-consume-installer"
+  install -m644 "$unit" "$root_mnt/etc/systemd/system/omarchy-mac-consume-installer.service"
+  ln -sfn /etc/systemd/system/omarchy-mac-consume-installer.service \
+    "$root_mnt/etc/systemd/system/multi-user.target.wants/omarchy-mac-consume-installer.service"
+  printf '==> first boot of this root will delete %s and grow\n' "$INSTALLER_PARTLABEL"
 }
 
 install_into_free_space() {
@@ -1017,6 +1092,7 @@ install_into_free_space() {
   local root_uuid esp_uuid luks_uuid=""
   local esp_mode encrypt_root=0
   local created_parts=()
+  local nvme_installer=0 keep_grub_default=1 force_own=0
 
   command -v parted >/dev/null || fail "parted not found"
   require_graphical_payload
@@ -1031,7 +1107,11 @@ install_into_free_space() {
     [[ -z $name ]] && continue
     bytes=$(lsblk -dn -b -o SIZE "/dev/$name")
     (( bytes >= 8 * 1024 * 1024 * 1024 )) || continue
-    [[ $name == "$live_disk" ]] && (( running_from_this_live_usb == 1 )) && continue
+    # Skip the USB we booted from. An NVMe installer slice must see the
+    # hole on the same disk (in front of omarchy-install).
+    if [[ $name == "$live_disk" ]] && (( running_from_this_live_usb == 1 )) && ! disk_is_nvme "$name"; then
+      continue
+    fi
     region=$(largest_free_region "/dev/$name" || true)
     [[ -n $region ]] || continue
     read -r hole_start hole_size <<<"$region"
@@ -1075,10 +1155,22 @@ install_into_free_space() {
   fi
 
   mark_install_start
-  source_esp=$(esp_partition_on "$live_disk" || true)
-  [[ -n $source_esp ]] || fail "no ESP on the live USB $source_dev"
+  if disk_is_nvme "$live_disk"; then
+    source_esp=$(existing_esp_on "$live_disk" || esp_partition_on "$live_disk" || true)
+  else
+    source_esp=$(esp_partition_on "$live_disk" || true)
+  fi
+  [[ -n $source_esp ]] || fail "no ESP on the live disk $source_dev"
   esp_part=$(existing_esp_on "$target_name" || true)
   [[ -n $esp_part ]] || fail "$target_dev has no ESP; will not create one next to APFS"
+  if [[ $target_name == "$live_disk" ]] && disk_is_nvme "$target_name"; then
+    inst=$(installer_partition_on "$target_name" || true)
+    if [[ $inst == "$live_partition" ]]; then
+      nvme_installer=1
+      keep_grub_default=0
+      force_own=1
+    fi
+  fi
 
   backup=$(mktemp /tmp/omarchy-gpt-${target_name}.XXXXXX)
   if command -v sfdisk >/dev/null; then
@@ -1149,12 +1241,17 @@ EOF
   rm -f "$root_mnt/omarchy-mac-overlay-write"
   : >"$root_mnt/etc/machine-id"
 
-  esp_mode=$(apply_system_esp_bootloader "$esp_part" "$root_uuid" "$source_esp" "$luks_uuid")
+  # USB free-space next to a live root keeps that GRUB default. The NVMe
+  # installer wrote a temporary live BOOTAA64.EFI — replace it (own-mode).
+  esp_mode=$(apply_system_esp_bootloader "$esp_part" "$root_uuid" "$source_esp" "$luks_uuid" "$keep_grub_default" "$force_own")
 
   esp_uuid=$(blkid -s UUID -o value "$esp_part")
   printf 'UUID=%s /boot vfat defaults,fmask=0133,dmask=0022 0 2\n' "$esp_uuid" >>"$root_mnt/etc/fstab"
 
   personalize_graphical_session "$root_mnt" "$root_dev"
+  if (( nvme_installer == 1 )); then
+    seed_installer_consume "$root_mnt"
+  fi
 
   sync
   umount "$root_mnt"

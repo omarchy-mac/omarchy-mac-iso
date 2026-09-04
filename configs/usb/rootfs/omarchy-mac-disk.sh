@@ -9,6 +9,8 @@ ESP_PARTTYPE=c12a7328-f81f-11d2-ba4b-00a0c93ec93b
 GPT_BACKUP_SECTORS=34
 # Skip GPT alignment slivers
 MIN_FREE_MIB=64
+# Temporary NVMe live slice. Delete this GPT name only — never APFS/iBoot/Recovery.
+INSTALLER_PARTLABEL=omarchy-install
 
 disk_has_apple_partitions() {
   local disk=$1 type
@@ -153,4 +155,141 @@ new_partition_node() {
     return 0
   done < <(lsblk -ln -o NAME "/dev/$disk")
   return 1
+}
+
+# Whole MiB from a parted unit (1.00MiB -> 1).
+mib_int() {
+  local v=$1
+  v=${v%;}
+  v=${v%MiB}
+  v=${v%%.*}
+  [[ $v =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$v"
+}
+
+# Machine-readable GPT rows: number start_mib end_mib name
+gpt_part_rows() {
+  local dev=$1 num start end size fs name flags
+  while IFS=: read -r num start end size fs name flags; do
+    [[ $num =~ ^[0-9]+$ ]] || continue
+    name=${name%;}
+    start=$(mib_int "$start") || continue
+    end=$(mib_int "$end") || continue
+    printf '%s %s %s %s\n' "$num" "$start" "$end" "$name"
+  done < <(parted -s -m "$dev" unit MiB print 2>/dev/null)
+}
+
+find_part_number_by_name() {
+  local dev=$1 want=$2 num start end name
+  while read -r num start end name; do
+    [[ $name == "$want" ]] || continue
+    printf '%s\n' "$num"
+    return 0
+  done < <(gpt_part_rows "$dev")
+  return 1
+}
+
+part_start_end_mib() {
+  local dev=$1 want=$2 num start end name
+  while read -r num start end name; do
+    [[ $num == "$want" ]] || continue
+    printf '%s %s\n' "$start" "$end"
+    return 0
+  done < <(gpt_part_rows "$dev")
+  return 1
+}
+
+# Place the installer at the tail of a hole so the remaining space is a
+# leading unallocated region the Linux TUI can mkpart, then grow into
+# after the installer is deleted. Prints:
+#   root_start_mib root_size_mib installer_start_mib installer_size_mib
+split_hole_for_tail_installer() {
+  local hole_start=$1 hole_size=$2 installer_mib=$3
+  local installer_start root_size
+  [[ $hole_start =~ ^[0-9]+$ && $hole_size =~ ^[0-9]+$ && $installer_mib =~ ^[0-9]+$ ]] || return 1
+  (( installer_mib >= MIN_FREE_MIB )) || return 1
+  (( hole_size >= installer_mib + MIN_FREE_MIB )) || return 1
+  installer_start=$(( hole_start + hole_size - installer_mib ))
+  root_size=$(( hole_size - installer_mib ))
+  (( installer_start > hole_start )) || return 1
+  printf '%s %s %s %s\n' "$hole_start" "$root_size" "$installer_start" "$installer_mib"
+}
+
+# Delete GPT name omarchy-install only. Refuses any other name so a
+# script cannot rm Recovery/APFS by accident.
+delete_installer_partition() {
+  local dev=$1 name=${2:-$INSTALLER_PARTLABEL} num
+  [[ $name == "$INSTALLER_PARTLABEL" ]] || return 1
+  num=$(find_part_number_by_name "$dev" "$name") || return 1
+  parted -s "$dev" rm "$num"
+}
+
+# Grow partition $2 into the free region that starts at its current end.
+# Never uses 100% — Recovery often follows the hole.
+grow_partition_into_next_hole() {
+  local dev=$1 num=$2
+  local start end hole_start hole_size hole_end disk_mib
+  read -r start end <<<"$(part_start_end_mib "$dev" "$num")" || return 1
+  disk_mib=$(device_mib "$dev")
+  while read -r hole_start hole_size; do
+    (( hole_start >= end - 2 && hole_start <= end + 2 )) || continue
+    read -r hole_start hole_size hole_end <<<"$(clamp_free_region "$hole_start" "$hole_size" "$disk_mib")" \
+      || return 1
+    (( hole_end > end )) || return 1
+    parted -s "$dev" resizepart "$num" "${hole_end}MiB"
+    return 0
+  done < <(list_free_regions "$dev")
+  return 1
+}
+
+installer_partition_on() {
+  local disk=$1 name label
+  while read -r name label; do
+    [[ $name == "$disk" ]] && continue
+    [[ $label == "$INSTALLER_PARTLABEL" ]] || continue
+    printf '/dev/%s\n' "$name"
+    return 0
+  done < <(lsblk -ln -o NAME,PARTLABEL "/dev/$disk" 2>/dev/null)
+  return 1
+}
+
+# macOS diskutil addPartition cannot set a GPT name (gpt label is EPERM
+# on the internal SSD). The live payload is still labelled OMARCHYLIVE.
+omarchy_live_payload_on() {
+  local disk=$1 skip=${2:-} name label
+  while read -r name label; do
+    [[ $name == "$disk" ]] && continue
+    [[ $label == OMARCHYLIVE ]] || continue
+    [[ -n $skip && /dev/$name == "$skip" ]] && continue
+    printf '/dev/%s\n' "$name"
+    return 0
+  done < <(lsblk -ln -o NAME,LABEL "/dev/$disk" 2>/dev/null)
+  return 1
+}
+
+partition_number_of() {
+  local part=$1 n
+  n=$(lsblk -dn -o PARTN "$part" 2>/dev/null || true)
+  [[ $n =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$n"
+}
+
+# Set GPT name omarchy-install on the NVMe live payload. No-op on USB
+# (PARTLABEL stays payload) and if the name is already set.
+ensure_installer_partlabel() {
+  local part=$1 disk num label ptype
+  [[ -b $part ]] || return 1
+  disk=$(lsblk -no PKNAME "$part")
+  [[ -n $disk ]] || return 1
+  disk_is_nvme "$disk" || return 0
+  label=$(lsblk -dn -o PARTLABEL "$part" 2>/dev/null || true)
+  [[ $label == "$INSTALLER_PARTLABEL" ]] && return 0
+  ptype=$(lsblk -dn -o PARTTYPE "$part" 2>/dev/null || true)
+  ptype=${ptype,,}
+  [[ $ptype != "$APPLE_APFS" && $ptype != "$APPLE_IBOOT" && $ptype != "$APPLE_RECOVERY" ]] \
+    || return 1
+  num=$(partition_number_of "$part") || return 1
+  parted -s "/dev/$disk" name "$num" "$INSTALLER_PARTLABEL" || return 1
+  command -v udevadm >/dev/null && udevadm settle --timeout=5 || true
+  printf '==> GPT name %s on %s (macOS could not set it)\n' "$INSTALLER_PARTLABEL" "$part"
 }

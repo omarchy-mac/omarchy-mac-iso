@@ -1,10 +1,12 @@
 #!/usr/bin/ash
 # SPDX-License-Identifier: MIT
 #
-# After asahi firmware + udev: mount the btrfs payload (label OMARCHYLIVE,
-# subvol=@), overlay a tmpfs, switch_root into /sbin/init on that overlay.
+# After asahi firmware + udev: mount the btrfs payload (GPT name
+# omarchy-install, or label OMARCHYLIVE, subvol=@), overlay a tmpfs,
+# switch_root into /sbin/init on that overlay.
 
 PAYLOAD_LABEL="OMARCHYLIVE"
+INSTALLER_PARTLABEL="omarchy-install"
 LIVE_MOUNT="/run/omarchy-root"
 OVL_MOUNT="/run/omarchy-ovl"
 NEW_ROOT="/new_root"
@@ -13,7 +15,9 @@ MARKER="omarchy-mac-live-ok"
 wait_for_payload() {
   i=0
   while [ "$i" -lt 30 ]; do
-    if [ -e /dev/disk/by-label/"$PAYLOAD_LABEL" ] || [ -b /dev/sda2 ]; then
+    if [ -e /dev/disk/by-partlabel/"$INSTALLER_PARTLABEL" ] \
+      || [ -e /dev/disk/by-label/"$PAYLOAD_LABEL" ] \
+      || [ -b /dev/sda2 ]; then
       return 0
     fi
     sleep 1
@@ -42,7 +46,9 @@ run_hook() {
     hang "omarchy-usb-live: payload $PAYLOAD_LABEL never appeared (dd the GPT image, not a FAT file copy)"
   fi
 
-  if [ -e /dev/disk/by-label/"$PAYLOAD_LABEL" ]; then
+  if [ -e /dev/disk/by-partlabel/"$INSTALLER_PARTLABEL" ]; then
+    payload_dev=$(readlink -f /dev/disk/by-partlabel/"$INSTALLER_PARTLABEL")
+  elif [ -e /dev/disk/by-label/"$PAYLOAD_LABEL" ]; then
     payload_dev=$(readlink -f /dev/disk/by-label/"$PAYLOAD_LABEL")
   else
     payload_dev=/dev/sda2

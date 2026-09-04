@@ -1,0 +1,134 @@
+#!/bin/bash
+# First boot of an installed NVMe root: delete GPT name omarchy-install on
+# this disk and grow the root into that hole. Never APFS/iBoot/Recovery.
+# Safe to re-run; no-ops if the installer slice is already gone.
+set -euo pipefail
+
+fail() { printf 'omarchy-mac-consume-installer: %s\n' "$*" >&2; exit 1; }
+
+SHARE=/usr/local/share/omarchy-mac-iso
+if [[ -f $SHARE/omarchy-mac-disk.sh ]]; then
+  # shellcheck source=/dev/null
+  source "$SHARE/omarchy-mac-disk.sh"
+elif [[ -f /usr/local/sbin/omarchy-mac-disk.sh ]]; then
+  # shellcheck source=/dev/null
+  source /usr/local/sbin/omarchy-mac-disk.sh
+else
+  fail "omarchy-mac-disk.sh not found"
+fi
+
+[[ $EUID == 0 ]] || fail "run as root"
+
+# Still the live overlay — deleting the lowerdir would unplug the running OS.
+[[ -e /omarchy-mac-overlay-write ]] && fail "still on the live overlay; reboot into the installed root first"
+
+root_src=$(findmnt -nro SOURCE /)
+root_src=${root_src%%[[]*}
+[[ -n $root_src ]] || fail "could not find the device mounted on /"
+# lsblk -d PKNAME is empty for /dev/mapper/root. Walk dm slaves in sysfs.
+walk=$root_src
+gpt_part=""
+disk=""
+for _ in 1 2 3 4 5; do
+  type=$(lsblk -dn -o TYPE "$walk" 2>/dev/null || true)
+  kname=$(lsblk -dn -o KNAME "$walk" 2>/dev/null || true)
+  name=$(lsblk -dn -o NAME "$walk" 2>/dev/null || true)
+  if [[ $type == part ]]; then
+    gpt_part=/dev/$name
+    disk=$(lsblk -dn -o PKNAME "$walk")
+    [[ -n $disk ]] || disk=$(lsblk -no PKNAME "/dev/$kname" 2>/dev/null | awk 'NF{print; exit}')
+    break
+  fi
+  slave=""
+  if [[ -n $kname && -d /sys/class/block/$kname/slaves ]]; then
+    slave=$(ls /sys/class/block/"$kname"/slaves 2>/dev/null | awk 'NR==1{print}')
+  fi
+  [[ -n $slave ]] || break
+  walk=/dev/$slave
+done
+[[ -n $disk && -n $gpt_part ]] || fail "could not find the GPT partition that holds /"
+disk_is_nvme "$disk" || fail "refusing to consume an installer slice on non-NVMe $disk"
+
+inst=$(installer_partition_on "$disk" || true)
+if [[ -z $inst ]]; then
+  inst=$(omarchy_live_payload_on "$disk" "$gpt_part" || true)
+  if [[ -n $inst ]]; then
+    ensure_installer_partlabel "$inst" \
+      || fail "found leftover OMARCHYLIVE $inst but could not name it $INSTALLER_PARTLABEL"
+    inst=$(installer_partition_on "$disk" || true)
+  fi
+fi
+disable_self() {
+  systemctl disable omarchy-mac-consume-installer.service 2>/dev/null || true
+}
+
+if [[ -z $inst ]]; then
+  printf 'omarchy-mac-consume-installer: no %s on %s (already consumed)\n' \
+    "$INSTALLER_PARTLABEL" "$disk"
+  disable_self
+  exit 0
+fi
+
+[[ $inst != "$root_src" && $inst != "$gpt_part" ]] || fail "installer partition $inst is the running root"
+
+fstype=$(lsblk -dn -o FSTYPE "$inst" || true)
+parttype=$(lsblk -dn -o PARTTYPE "$inst" || true)
+parttype=${parttype,,}
+[[ $parttype != "$APPLE_APFS" && $parttype != "$APPLE_IBOOT" && $parttype != "$APPLE_RECOVERY" ]] \
+  || fail "refusing Apple partition type on $inst"
+if [[ -n $fstype && $fstype != btrfs && $fstype != crypto_LUKS ]]; then
+  fail "installer $inst has unexpected fstype $fstype"
+fi
+
+if findmnt -n "$inst" >/dev/null; then
+  fail "$inst is still mounted"
+fi
+
+dev=/dev/$disk
+num=$(find_part_number_by_name "$dev" "$INSTALLER_PARTLABEL") \
+  || fail "no GPT name $INSTALLER_PARTLABEL on $dev"
+root_num=$(find_part_number_by_name "$dev" root || true)
+if [[ -z $root_num ]]; then
+  # LUKS/btrfs may keep PARTLABEL empty; use the GPT partition that holds /.
+  root_num=$(lsblk -no PARTN "$gpt_part" 2>/dev/null || true)
+fi
+[[ -n $root_num ]] || fail "could not find the GPT number for the running root"
+
+before_apple=$(apple_partition_snapshot "$dev")
+printf '==> deleting %s (%s, GPT #%s) on %s\n' "$INSTALLER_PARTLABEL" "$inst" "$num" "$dev"
+delete_installer_partition "$dev" "$INSTALLER_PARTLABEL" \
+  || fail "parted rm of $INSTALLER_PARTLABEL failed"
+partprobe "$dev" 2>/dev/null || true
+command -v udevadm >/dev/null && udevadm settle --timeout=5 || true
+
+after_apple=$(apple_partition_snapshot "$dev")
+if [[ $before_apple != "$after_apple" ]]; then
+  printf 'error: Apple partition types changed after deleting the installer\n' >&2
+  printf 'before:\n%s\nafter:\n%s\n' "$before_apple" "$after_apple" >&2
+  exit 1
+fi
+
+printf '==> growing GPT #%s into the hole the installer left\n' "$root_num"
+if ! grow_partition_into_next_hole "$dev" "$root_num"; then
+  printf 'warning: no following hole to grow into (installer was not at the tail?)\n' >&2
+else
+  partprobe "$dev" 2>/dev/null || true
+  after_grow=$(apple_partition_snapshot "$dev")
+  if [[ $before_apple != "$after_grow" ]]; then
+    printf 'error: Apple partition types changed after grow\n' >&2
+    exit 1
+  fi
+  if [[ $root_src == /dev/mapper/* ]]; then
+    cryptsetup resize "${root_src#/dev/mapper/}" \
+      || fail "cryptsetup resize failed"
+  fi
+  if findmnt -n -o FSTYPE / | grep -qx btrfs; then
+    btrfs filesystem resize max / \
+      || fail "btrfs filesystem resize max / failed"
+  fi
+fi
+
+printf '==> installer slice consumed on %s\n' "$dev"
+lsblk -o NAME,SIZE,FSTYPE,LABEL,PARTLABEL "$dev"
+disable_self
+exit 0

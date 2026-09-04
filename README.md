@@ -33,6 +33,23 @@ sudo dd if=release/omarchy-mac-iso-usb/omarchy-mac-usb.img of=/dev/sdX bs=4M sta
 
 Copying files onto an existing FAT stick is not enough — the payload is its own partition.
 
+### NVMe installer (no USB)
+
+M3 Type-C often never appears in U-Boot. After Asahi **UEFI-only** (M3: `EXPERT=true` and `curl -L https://alx.sh/dev | sh`, firmware 14.8.3), leave the leftover hole **unallocated**. From macOS, with a `--usb --rootfs` build's `release/omarchy-mac-iso-usb/` files:
+
+```
+sudo ./scripts/macos/place-nvme-installer.sh \
+  --payload release/omarchy-mac-iso-usb/payload.img \
+  --esp-files release/omarchy-mac-iso-usb \
+  --confirm
+```
+
+That `gpt add`s **omarchy-install** at the **tail** of the hole, `dd`s the live payload onto that slice only, and copies live GRUB next to `m1n1/` (hashes of `m1n1/` / `vendorfw/` / `asahi/` must match). The space in front stays unallocated. Cold power on, boot the NVMe ESP, then **Install into free space**. First boot of the new root deletes only `omarchy-install` and grows. Do not `dd` onto `disk0` / `rdisk0`.
+
+`./scripts/macos/place-nvme-installer.sh` without `--confirm` prints the plan.
+
+M3 Air, 7.1.6 NVMe installer (Linux slice is disposable): [docs/m3-716-nvme-installer.md](docs/m3-716-nvme-installer.md).
+
 ### Refresh an existing live USB
 
 Does not add packages. Updates installer scripts, GRUB cfg, systemd quieting, and rebuilds **both** initrds (live and install):
@@ -58,6 +75,8 @@ bootefi ${kernel_addr_r} ${fdtcontroladdr}
 
 Live boot is meant to be quiet (`loglevel=0`, systemd status off, Plymouth and ldconfig masked on the installer USB only). Installed disks keep `quiet splash` and branded Plymouth.
 
+M3 (`apple,j613`) display needs `linux-asahi` **>= 7.2** (appledrm V14_7) plus the DCP nodes in m1n1's bundled DTB. A 7.1.6 image boots `simpledrm` only. Build on a 7.2 host, or set `OMARCHY_KVER` / `OMARCHY_VMLINUZ` / `OMARCHY_MODULES_DIR`. The installer then overlays `configs/m1n1/j613-dcp.dtbo` into the j613 slot of the existing `m1n1/boot.bin` (backup `.bak-predcp`). It does not use GRUB `devicetree` and does not write extlinux. Unencrypted roots get `initramfs-linux-asahi-plain.img` (no `encrypt` hook). `OMARCHY_ALLOW_OLD_APPLEDRM=1` forces a simpledrm-capable 7.1 image.
+
 ### Installer
 
 On the live USB, tty1 autologin runs `omarchy-mac-install`. It never `mklabel`s a disk that already has Apple partition types.
@@ -66,7 +85,7 @@ It asks for a username, password (re-prompts on mismatch), hostname (empty → `
 
 | Action | What it does |
 |--------|----------------|
-| **Install into free space** | `parted mkpart` in an existing GPT hole only. APFS/iBoot/Recovery stay. Needs unallocated space (macOS APFS shrink or Asahi UEFI-only leftover) |
+| **Install into free space** | `parted mkpart` in an existing GPT hole only. APFS/iBoot/Recovery stay. Needs unallocated space (macOS APFS shrink, Asahi UEFI-only leftover, or the hole in front of an `omarchy-install` slice) |
 | **Reinstall an existing Omarchy root** | Formats that partition only — no `mkpart`, no `mklabel`. Finds btrfs `OMARCHYROOT` or a LUKS volume labelled `OMARCHYROOT` / GPT name `root`. Does not offer Asahi's own LUKS |
 | **Wipe a USB stick and install** | GPT ESP (`OMARCHYBOOT`) + root filling the stick. Persistent desktop, no overlay |
 | **Write GRUB for an existing Omarchy root** | Bootloader only. Skips encrypted roots (needs the inner UUID) |

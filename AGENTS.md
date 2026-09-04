@@ -11,7 +11,8 @@ This repo is **omarchy-mac-iso**: the Apple Silicon live USB and installer. It i
 
 Never:
 
-- `mklabel`, `wipefs`, or partition-delete on a disk that already has Apple GPT types (APFS / iBoot / Recovery). Shrinking APFS happens in **macOS only**. Altering APFS from Linux can force a DFU restore
+- `mklabel`, `wipefs`, or partition-delete on a disk that already has Apple GPT types (APFS / iBoot / Recovery). The one exception is deleting GPT name `omarchy-install` (the temporary NVMe installer slice this repo created). Shrinking APFS happens in **macOS only**. Altering APFS from Linux can force a DFU restore
+- Replace all of `m1n1/boot.bin`, or write `vendorfw/` / `asahi/`. j613 may patch **only** the existing DTB slot in `boot.bin`
 - Put hostnames, USB brand names, or other machine-specific strings into shipped installer copy
 - Open a PR unless the user asked for one
 - Treat a successful `./test/unit` as a visual or metal proof
@@ -34,11 +35,13 @@ A full image is `sudo ./bin/omarchy-mac-iso-make --usb --rootfs` (pacstraps `oma
 `omarchy-mac-install` on the live overlay:
 
 - **Wipe USB** / **free space** / **replace existing** — `mkfs.btrfs` then `tar` of used files from the overlay lowerdir (`/run/omarchy-root`). Not a `dd` of the payload
+- **NVMe installer slice** — GPT name `omarchy-install` at the **tail** of the hole (macOS `scripts/macos/place-nvme-installer.sh` after UEFI-only). Live overlay from that slice; free-space fills the hole in front; first boot of the new root deletes **only** `omarchy-install` and grows. Never `parted rm` APFS / iBoot / Recovery
 - **Clone** — still `dd` through the last partition; rewrite the clone btrfs UUID
 - LUKS is offered on wipe, free-space, and replace. Same password as the desktop user. New LUKS volumes get label `OMARCHYROOT`
 - Replace-existing looks for btrfs `OMARCHYROOT` **or** `crypto_LUKS` with that label / GPT name `root`. Asahi's own LUKS has neither — do not offer it
 - Identity validation re-prompts. Full name and email are optional (git + XCompose). Before the copy, show a table of action, target, user, password stars, full name, email, hostname, encryption, then "Does this look right?"
-- System ESP: **piggyback** (`custom.cfg` only) if `BOOTAA64.EFI` already exists; **own** if the ESP has none. Never rewrite `m1n1/`, `vendorfw/`, or `asahi/`
+- System ESP: **piggyback** (`custom.cfg` only) if `BOOTAA64.EFI` already exists; **own** if the ESP has none. Never rewrite `vendorfw/` or `asahi/`. Never replace `m1n1/boot.bin` as a whole. The one m1n1 exception is the **j613 DTB slot**: `fdtoverlay` of `configs/m1n1/j613-dcp.dtbo` padded to the existing slot (`omarchy-mac-patch-j613-dcp`). Backup `boot.bin.bak-predcp`. Do not apply a DTB via GRUB `devicetree` (single-core boot). Do not write `/boot/extlinux/`
+- M3 (j613) needs a kernel whose appledrm has V14_7 (`linux-asahi` >= 7.2). 7.1.6 stays on simpledrm. Unencrypted installs copy `initramfs-linux-asahi-plain.img` (no `encrypt` hook). Cmdline includes `appledrm.show_notch=1`. Hyprland `cursor.no_hardware_cursors = true` on t8122 until AGX exists
 
 Free space needs an unallocated GPT hole (from a macOS APFS shrink or Asahi UEFI-only). If the hole is already a partition, use replace-existing.
 

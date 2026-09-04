@@ -86,6 +86,12 @@ if [[ -n $live ]]; then
   install -d "$mnt/usr/local/sbin" "$share" "$share/initcpio/hooks" "$share/initcpio/install" "$mnt/root"
   install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-install" "$mnt/usr/local/sbin/omarchy-mac-install"
   install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-live-welcome" "$mnt/usr/local/sbin/omarchy-mac-live-welcome"
+  install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-consume-installer" \
+    "$mnt/usr/local/sbin/omarchy-mac-consume-installer"
+  install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-consume-installer" \
+    "$share/omarchy-mac-consume-installer"
+  install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-consume-installer.service" \
+    "$share/omarchy-mac-consume-installer.service"
   install -m644 "$repo_root/configs/usb/rootfs/root-bash-profile" "$mnt/root/.bash_profile"
   install -m644 "$repo_root/configs/usb/rootfs/issue" "$mnt/etc/issue"
   install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-disk.sh" "$share/omarchy-mac-disk.sh"
@@ -95,6 +101,16 @@ if [[ -n $live ]]; then
   install -m644 "$repo_root/configs/usb/grub-embed-install.cfg" "$share/grub-embed-install.cfg"
   install -m644 "$repo_root/configs/usb/grub-embed-system.cfg" "$share/grub-embed-system.cfg"
   install -m644 "$repo_root/configs/usb-initcpio/mkinitcpio-install.conf" "$share/mkinitcpio-install.conf"
+  install -m644 "$repo_root/configs/usb-initcpio/mkinitcpio-install-plain.conf" \
+    "$share/mkinitcpio-install-plain.conf"
+  install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-patch-j613-dcp" \
+    "$mnt/usr/local/sbin/omarchy-mac-patch-j613-dcp"
+  install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-patch-j613-dcp" \
+    "$share/omarchy-mac-patch-j613-dcp"
+  install -d "$share/m1n1"
+  install -m644 "$repo_root/configs/m1n1/j613-dcp-overlay.dts" "$share/m1n1/j613-dcp-overlay.dts"
+  install -m644 "$repo_root/configs/m1n1/j613-dcp.dtbo" "$share/m1n1/j613-dcp.dtbo"
+  install -m644 "$repo_root/configs/m1n1/patch-boot-bin-dcp.py" "$share/m1n1/patch-boot-bin-dcp.py"
   install -m644 "$repo_root/configs/usb-initcpio/hooks/omarchy-usb-wait" "$share/initcpio/hooks/omarchy-usb-wait"
   install -m644 "$repo_root/configs/usb-initcpio/install/omarchy-usb-wait" "$share/initcpio/install/omarchy-usb-wait"
   install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-asahi-hw.service" \

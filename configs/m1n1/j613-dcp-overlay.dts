@@ -1,0 +1,170 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * DCP display overlay for t8122-j613 (M3 Air). Applied with fdtoverlay onto
+ * the j613 DTB slot inside m1n1's boot.bin (padded back to the slot size).
+ * Do not ship this DTB via GRUB `devicetree` — that drops m1n1's per-boot
+ * cpu-release-addr and boots one core.
+ *
+ * Base-tree phandles referenced as literals (stable across boots, structure
+ * identical): aic = 0x0f, ps_disp_cpu = 0x8e.
+ * Values from the machine ADT + live DART page-table walk. Not Asahi-submittable.
+ */
+
+/ {
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			clk_disp0: clock-disp0 {
+				compatible = "fixed-clock";
+				#clock-cells = <0x0>;
+				clock-frequency = <533333328>;
+				clock-output-names = "clk_disp0";
+			};
+		};
+	};
+
+	fragment@1 {
+		target-path = "/soc";
+		__overlay__ {
+			disp0_dart: iommu@28d304000 {
+				compatible = "apple,t8122-dart", "apple,t8110-dart";
+				reg = <0x2 0x8d304000 0x0 0x4000>;
+				#iommu-cells = <0x5>;
+				interrupt-parent = <0x0f>;
+				interrupts = <0x0 557 0x4>;
+				power-domains = <0x8e>;
+			};
+
+			dcp_dart: iommu@28d30c000 {
+				compatible = "apple,t8122-dart", "apple,t8110-dart";
+				reg = <0x2 0x8d30c000 0x0 0x4000>;
+				#iommu-cells = <0x5>;
+				interrupt-parent = <0x0f>;
+				interrupts = <0x0 557 0x4>;
+				power-domains = <0x8e>;
+			};
+
+			dcp_mbox: mbox@28ec08000 {
+				compatible = "apple,t8122-asc-mailbox", "apple,asc-mailbox-v4";
+				reg = <0x2 0x8ec08000 0x0 0x4000>;
+				interrupt-parent = <0x0f>;
+				interrupts = <0x0 537 0x4>,
+					<0x0 538 0x4>,
+					<0x0 539 0x4>,
+					<0x0 540 0x4>;
+				interrupt-names = "send-empty", "send-not-empty",
+					"recv-empty", "recv-not-empty";
+				#mbox-cells = <0x0>;
+				power-domains = <0x8e>;
+				resets = <0x8e>;
+			};
+
+			dcp: dcp@28ec00000 {
+				compatible = "apple,t8122-dcp", "apple,dcp";
+				mboxes = <&dcp_mbox>;
+				mbox-names = "mbox";
+				iommus = <&dcp_dart 0x5 0x8 0x00000000 0x7 0xffff0000>;
+				reg-names = "coproc", "disp-0", "disp-1", "disp-2", "disp-3";
+				reg = <0x2 0x8ec00000 0x0 0x4000>,
+					<0x2 0x8c000000 0x0 0x690000>,
+					<0x2 0x8d320000 0x0 0x4000>,
+					<0x2 0x8d344000 0x0 0x4000>,
+					<0x2 0x8e800000 0x0 0x800000>;
+				apple,bw-scratch = <&pmgr_dcp 0x0 0x4 0x5d8>;
+				apple,iomfb-surfaces = <0x1 0x1 0x0 0x1>;
+				power-domains = <0x8e>;
+				resets = <0x8e>;
+				clocks = <&clk_disp0>;
+				#address-cells = <0x2>;
+				#size-cells = <0x2>;
+
+				apple,firmware-compat = <0xe 0x7 0x0>;
+				apple,firmware-version = <0xe 0x7 0x0>;
+				apple,notch-height = <0x40>;
+				memory-region = <&rsv_dcp_fw>, <&rsv_dcp_data>, <&rsv_region57>,
+					<&rsv_region94>, <&rsv_region95>, <&rsv_fb>;
+				memory-region-names = "asc-firmware", "dcp_data", "region57",
+					"region94", "region95", "framebuffer";
+
+				disp0_piodma: piodma {
+					iommus = <&disp0_dart 0x4 0x0 0x0 0xf 0xffff0000>;
+					memory-region = <&rsv_region95>;
+					memory-region-names = "region95";
+				};
+
+				panel: panel {
+					compatible = "apple,panel-j613", "apple,panel";
+					width-mm = <290>;
+					height-mm = <189>;
+					adj-height-mm = <181>;
+					apple,max-brightness = <525>;
+				};
+			};
+
+			display: display-subsystem {
+				compatible = "apple,display-subsystem";
+				iommus = <&disp0_dart 0x0 0x0 0x0 0xf 0xffff0000>;
+				memory-region = <&rsv_region94>, <&rsv_fb>;
+				memory-region-names = "region94", "framebuffer";
+			};
+
+			pmgr_dcp: power-management@2d03d0000 {
+				reg = <0x2 0xd03d0000 0x0 0x4000>;
+				reg-names = "dcp-bw-scratch";
+				#apple,bw-scratch-cells = <0x3>;
+			};
+		};
+	};
+
+	fragment@2 {
+		target-path = "/reserved-memory";
+		__overlay__ {
+			rsv_dcp_fw: asc-firmware@1000022c000 {
+				compatible = "apple,asc-mem";
+				reg = <0x100 0x022c000 0x0 0x604000>;
+				no-map;
+				iommu-addresses = <&dcp 0x0 0x40000000 0x0 0x604000>;
+			};
+
+			rsv_dcp_data: dcp_data@103e1864000 {
+				compatible = "apple,asc-mem";
+				reg = <0x103 0xe1864000 0x0 0x300000>;
+				no-map;
+				iommu-addresses = <&dcp 0x0 0x80000000 0x0 0x300000>;
+			};
+
+			rsv_region57: region57@103e5c28000 {
+				compatible = "apple,asc-mem";
+				reg = <0x103 0xe5c28000 0x0 0x1000000>;
+				no-map;
+				iommu-addresses = <&dcp 0x0 0x968000 0x0 0x1000000>;
+			};
+
+			rsv_region94: region94@103e5c24000 {
+				compatible = "apple,asc-mem";
+				reg = <0x103 0xe5c24000 0x0 0x4000>;
+				no-map;
+				iommu-addresses = <&dcp 0x0 0x1990000 0x0 0x4000>,
+					<&display 0x0 0x1990000 0x0 0x4000>;
+			};
+
+			rsv_region95: region95@103e5b64000 {
+				compatible = "apple,asc-mem";
+				reg = <0x103 0xe5b64000 0x0 0xc0000>;
+				no-map;
+				iommu-addresses = <&dcp 0x0 0x1994000 0x0 0xc0000>,
+					<&disp0_piodma 0x0 0x1994000 0x0 0xc0000>;
+			};
+
+			rsv_fb: framebuffer@103e1bf4000 {
+				compatible = "framebuffer";
+				reg = <0x103 0xe1bf4000 0x0 0x3f70000>;
+				no-map;
+				iommu-addresses = <&dcp 0x0 0x1a54000 0x0 0x3f70000>,
+					<&display 0x0 0x1a54000 0x0 0x3f70000>;
+			};
+		};
+	};
+};

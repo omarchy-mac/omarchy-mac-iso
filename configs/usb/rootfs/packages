@@ -17,6 +17,7 @@
 sudo
 base-devel
 cryptsetup
+dtc
 wf-recorder
 rtkit
 pipewire-alsa

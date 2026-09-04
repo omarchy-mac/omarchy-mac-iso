@@ -7,14 +7,43 @@ set -euo pipefail
 
 out_dir="$1"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-kver="$(uname -r)"
+kver="${OMARCHY_KVER:-$(uname -r)}"
 
 log() { printf '==> %s\n' "$*" >&2; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 [[ $(uname -m) == aarch64 ]] || fail "--usb needs an aarch64 host (this builds linux-asahi into the image)"
-[[ -f /boot/vmlinuz-linux-asahi ]] || fail "no /boot/vmlinuz-linux-asahi — install linux-asahi"
-command -v mkinitcpio >/dev/null || fail "mkinitcpio not found"
+# Alarm puts the kernel at /boot/vmlinuz-linux-asahi. Omarchy piggyback ESP
+# keeps it under EFI/omarchy/ so grub-mkconfig does not pick it up. Do not
+# pacman linux-asahi on an Omarchy ESP (update-m1n1).
+host_vmlinuz=""
+if [[ -n ${OMARCHY_VMLINUZ:-} ]]; then
+  [[ -f $OMARCHY_VMLINUZ ]] || fail "OMARCHY_VMLINUZ=$OMARCHY_VMLINUZ is missing"
+  host_vmlinuz=$OMARCHY_VMLINUZ
+else
+  for f in /boot/vmlinuz-linux-asahi /boot/EFI/omarchy/vmlinuz; do
+    [[ -f $f ]] || continue
+    host_vmlinuz=$f
+    break
+  done
+fi
+[[ -n $host_vmlinuz ]] \
+  || fail "no host linux-asahi vmlinuz (tried /boot/vmlinuz-linux-asahi and /boot/EFI/omarchy/vmlinuz)"
+# M3 DCP needs appledrm V14_7 (>= asahi-wip-7.2). 7.1.6 falls back to simpledrm.
+appledrm_ko=""
+for f in /usr/lib/modules/"$kver"/kernel/drivers/gpu/drm/apple/appledrm.ko*; do
+  [[ -f $f ]] || continue
+  appledrm_ko=$f
+  break
+done
+if [[ -n $appledrm_ko ]] && ! strings "$appledrm_ko" | grep -q V14_7; then
+  if [[ ${OMARCHY_ALLOW_OLD_APPLEDRM:-} == 1 ]]; then
+    log "warning: $kver appledrm has no V14_7 — M3 will stay on simpledrm"
+  else
+    fail "$kver appledrm has no V14_7 (need linux-asahi >= 7.2 for M3 DCP). Build on a 7.2 host, or set OMARCHY_KVER/OMARCHY_VMLINUZ, or OMARCHY_ALLOW_OLD_APPLEDRM=1 for a simpledrm image"
+  fi
+fi
+command -v mkinitcpio >/dev/null || fail "mkinitcpio not found (pacman -S mkinitcpio)"
 command -v grub-mkstandalone >/dev/null || fail "grub-mkstandalone not found (pacman -S grub)"
 command -v mkfs.vfat >/dev/null || fail "mkfs.vfat not found (pacman -S dosfstools)"
 command -v parted >/dev/null || fail "parted not found"
@@ -71,12 +100,19 @@ mkinitcpio -n \
   -k "$kver" \
   -g "$work/initramfs-omarchy-usb.img"
 
-log "Building install initramfs (USB root, no overlay)"
+log "Building install initramfs (USB root, LUKS)"
 mkinitcpio -n \
   -c "$repo_root/configs/usb-initcpio/mkinitcpio-install.conf" \
   "${mkinitcpio_dirs[@]}" \
   -k "$kver" \
   -g "$work/initramfs-linux-asahi.img"
+
+log "Building install initramfs (unencrypted, no encrypt hook)"
+mkinitcpio -n \
+  -c "$repo_root/configs/usb-initcpio/mkinitcpio-install-plain.conf" \
+  "${mkinitcpio_dirs[@]}" \
+  -k "$kver" \
+  -g "$work/initramfs-linux-asahi-plain.img"
 
 log "Building standalone GRUB"
 grub-mkstandalone -O arm64-efi \
@@ -132,9 +168,10 @@ cp "$work/BOOTAA64.EFI" "$mnt/EFI/BOOT/BOOTAA64.EFI"
 cp "$repo_root/configs/usb/grub.cfg" "$mnt/EFI/BOOT/grub.cfg"
 cp "$repo_root/configs/usb/grub.cfg" "$mnt/grub/grub.cfg"
 : >"$mnt/omarchy-usb-live"
-cp /boot/vmlinuz-linux-asahi "$mnt/vmlinuz-linux-asahi"
+cp "$host_vmlinuz" "$mnt/vmlinuz-linux-asahi"
 cp "$work/initramfs-omarchy-usb.img" "$mnt/initramfs-omarchy-usb.img"
 cp "$work/initramfs-linux-asahi.img" "$mnt/initramfs-linux-asahi.img"
+cp "$work/initramfs-linux-asahi-plain.img" "$mnt/initramfs-linux-asahi-plain.img"
 sync
 
 if (( esp_priv == 1 )); then
@@ -161,9 +198,13 @@ dd if="$work/payload.img" of="$disk" bs=1M seek="$esp_end_mib" conv=notrunc stat
 cp "$work/BOOTAA64.EFI" "$out_dir/BOOTAA64.EFI"
 cp "$work/initramfs-omarchy-usb.img" "$out_dir/initramfs-omarchy-usb.img"
 cp "$work/initramfs-linux-asahi.img" "$out_dir/initramfs-linux-asahi.img"
+cp "$work/initramfs-linux-asahi-plain.img" "$out_dir/initramfs-linux-asahi-plain.img"
 cp "$work/payload.img" "$out_dir/payload.img"
-cp /boot/vmlinuz-linux-asahi "$out_dir/vmlinuz-linux-asahi"
+cp "$host_vmlinuz" "$out_dir/vmlinuz-linux-asahi"
 cp "$repo_root/configs/usb/grub.cfg" "$out_dir/grub.cfg"
+cp "$repo_root/configs/usb/grub-nvme-installer.cfg" "$out_dir/grub-nvme-installer.cfg"
+# mkinitcpio writes 600; the release dir is for copying onto a Mac.
+chmod a+r "$out_dir"/initramfs-*.img "$out_dir"/vmlinuz-linux-asahi "$out_dir"/payload.img "$out_dir"/BOOTAA64.EFI
 
 git_ref="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 payload_kind="busybox pid 1"

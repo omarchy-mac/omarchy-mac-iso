@@ -135,6 +135,19 @@ check "piggyback rewrites a leftover Omarchy Mac linux line" \
   "grep -q 'root=UUID=11111111-2222-3333-4444-555555555555' '$pig/grub/grub.cfg' && grep -q 'cryptdevice=UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:root:allow-discards' '$pig/grub/grub.cfg'"
 check "piggyback leftover rewrite drops the old root UUID" \
   "! grep -q old-root '$pig/grub/grub.cfg'"
+printf '%s\n' \
+  "set default=0" \
+  "menuentry 'Omarchy Mac' {" \
+  "  linux /EFI/omarchy/vmlinuz root=UUID=old-root rw loglevel=3 quiet splash" \
+  "  initrd /EFI/omarchy/initramfs.img" \
+  "}" \
+  'if [ -f /grub/custom.cfg ]; then source /grub/custom.cfg; fi' \
+  >"$pig/grub/grub.cfg"
+write_piggyback_esp_grub "$pig" "11111111-2222-3333-4444-555555555555" "" 1
+check "free-space piggyback does not steal GRUB default" \
+  "! grep -q \"set default='Omarchy Mac (new root\" '$pig/grub/custom.cfg'"
+check "free-space piggyback leaves the original linux line" \
+  "grep -q old-root '$pig/grub/grub.cfg'"
 check "piggyback leaves m1n1 hash unchanged" "[[ '$before_pig' == '$after_pig' ]]"
 check "esp_has_bootloader is true for piggyback ESP" "[[ -f '$pig/EFI/BOOT/BOOTAA64.EFI' ]]"
 check "esp_has_bootloader is false on an empty ESP dir" \
