@@ -125,21 +125,39 @@ Hard constraints, as refusals not comments:
 - Live installer never writes `m1n1/boot.bin`, `vendorfw/`, or `asahi/` on the
   internal ESP. `asahi/` holds wifi/bt pairing; leave it.
 - **System ESP GRUB, two modes.** U-Boot always loads `\EFI\BOOT\BOOTAA64.EFI`
-  (no EFI boot order). **Piggyback** if that file already exists: unique
-  kernels + `grub/custom.cfg`, abort if `BOOTAA64.EFI` bytes change.
-  **Own** if it is missing (UEFI-only): `grub-mkstandalone` + marker
+  (no EFI boot order). **Piggyback** if another installed OS owns that file:
+  unique kernels + `grub/custom.cfg`, abort if `BOOTAA64.EFI` bytes change.
+  The NVMe placer uses a distinct embed, marker, and `grub-nvme.cfg`; if it
+  temporarily replaced an existing EFI executable, restore that exact file
+  and then piggyback without replacing or parsing the owner's `grub.cfg`.
+  **Own** only if the ESP had no prior bootloader: `grub-mkstandalone` + marker
   `/omarchy-mac-root`, same recipe as wipe-USB, no `mkfs.vfat`, no
-  `grub-install`, no `update-m1n1`. Hash `m1n1/` / `vendorfw/` / `asahi/`
-  before and after; abort on drift. Do not silently replace an existing GRUB.
-- Installer kernels on the System ESP live in `EFI/omarchy/`, not
+  `grub-install`, no `update-m1n1`. Generate only UUID-named root fragments
+  into `grub/omarchy.cfg`, and make `custom.cfg` source it so the owning OS's
+  next `grub-mkconfig` retains the entries. Never concatenate a full generated
+  `grub.cfg`. Hash `m1n1/` / `vendorfw/` / `asahi/` before and after; abort on
+  drift. Do not silently discard an existing GRUB menu or its boot files.
+- Installed kernels on the System ESP live in
+  `EFI/omarchy/<btrfs-root-uuid>/`, one pair per root, not
   `vmlinuz-*` on the ESP root. `10_linux` globs `/boot/vmlinuz-*` for
   **any** `grub-mkconfig` that sees this ESP — including the installed
   OS's pacman `update-grub` hook, not only a live-USB chroot. A leftover
   `vmlinuz-omarchy-usb-root` becomes the newest default and pairs with
-  `initramfs-omarchy-usb-root.img` (no `encrypt` hook). Copying into
-  `EFI/omarchy/` also `rm`s those legacy names. Do not bak
+  `initramfs-omarchy-usb-root.img` (no `encrypt` hook). Copying into the
+  UUID-private directory also `rm`s those legacy names. Do not bak
   `EFI/omarchy/` (fills a 500MB ESP). Installer ESP backups are only
   `*.omarchy-bak` for `BOOTAA64.EFI` and grub configs.
+- The macOS NVMe placer stages its live kernel and initrds under private
+  `*-omarchy-nvme-*` names. It must not overwrite `/vmlinuz-linux-asahi`,
+  `/initramfs-linux-asahi.img`, or other `/boot` files owned by an existing
+  `omarchy-mac` installation. After the final UUID-private copies succeed,
+  the installer removes only those private temporary files.
+- A root sharing another installation's System ESP mounts it at `/boot/efi`,
+  not `/boot`. The standard ESP-root `/vmlinuz-linux-asahi` names remain the
+  exclusive property of the installation that already owns them. Until a
+  private-directory pacman hook exists, its install-time kernel is pinned; do
+  not run `omarchy-system-boot-to-esp` from that root because it would take
+  ownership of the shared ESP and replace the existing GRUB.
 - This machine already is a UEFI-only container plus Omarchy GRUB. Do **not**
   re-run the Asahi installer to "start over". Hide or replace `BOOTAA64.EFI`
   only after an ESP tarball is off-disk. Wiping the Omarchy LUKS root (p5)

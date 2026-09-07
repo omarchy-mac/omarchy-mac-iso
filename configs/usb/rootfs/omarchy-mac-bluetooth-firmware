@@ -1,0 +1,52 @@
+#!/bin/bash
+# Alias Broadcom Bluetooth firmware when OTP wants AMKOR (-a) but the
+# Asahi vendor package only extracted USI (-u) or Murata (-m).
+# Confirmed on j613 (apple,dnieper): brcmbt4388c0-*-u.bin boots the
+# controller. Never write ESP vendorfw/.
+
+set -euo pipefail
+
+vendor_dir=${OMARCHY_BRCM_VENDOR:-/usr/lib/firmware/vendor/brcm}
+alias_dir=${OMARCHY_BRCM_ALIAS_DIR:-/usr/lib/firmware/brcm}
+
+alias_missing_amkor() {
+  local src=$1 name dest
+  name=$(basename "$src")
+  dest=""
+  case "$name" in
+    *-u.bin) dest=${name%-u.bin}-a.bin ;;
+    *-u.ptb) dest=${name%-u.ptb}-a.ptb ;;
+    *-m.bin) dest=${name%-m.bin}-a.bin ;;
+    *-m.ptb) dest=${name%-m.ptb}-a.ptb ;;
+    *) return 0 ;;
+  esac
+  mkdir -p "$alias_dir"
+  [[ -e $alias_dir/$dest ]] && return 0
+  ln -sfn "$src" "$alias_dir/$dest"
+}
+
+have_hci() {
+  local d
+  for d in /sys/class/bluetooth/hci*; do
+    [[ -e $d ]] && return 0
+  done
+  return 1
+}
+
+rebind_hci_bcm4377() {
+  [[ ${OMARCHY_SKIP_REBIND:-} == 1 ]] && return 0
+  have_hci && return 0
+  modprobe -r hci_bcm4377 2>/dev/null || true
+  modprobe hci_bcm4377 2>/dev/null || true
+}
+
+if [[ -d $vendor_dir ]]; then
+  shopt -s nullglob
+  for src in "$vendor_dir"/brcmbt*.bin "$vendor_dir"/brcmbt*.ptb; do
+    alias_missing_amkor "$src"
+  done
+  shopt -u nullglob
+fi
+
+groupadd -f bluetooth 2>/dev/null || true
+rebind_hci_bcm4377

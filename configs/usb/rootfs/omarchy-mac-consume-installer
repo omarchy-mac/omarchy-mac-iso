@@ -19,6 +19,39 @@ fi
 
 [[ $EUID == 0 ]] || fail "run as root"
 
+# Initrd cryptsetup open leaves the volume key in dm-crypt. After switch_root
+# the initrd keyring is gone, so `cryptsetup resize` asks for a passphrase and
+# systemd stdin is empty ("Nothing to read on input"). Reload the live table
+# with a longer length; suspending the mapper would deadlock /.
+grow_open_luks_mapper() {
+  local name=$1 table backing offset backing_sectors mapper_sectors new_sectors
+  [[ -n $name && -b /dev/mapper/$name ]] || return 1
+  if cryptsetup -q resize "$name" </dev/null; then
+    printf '==> cryptsetup resized %s\n' "$name"
+    return 0
+  fi
+  printf '==> growing LUKS mapper %s without a passphrase\n' "$name"
+  table=$(dmsetup table --showkeys "$name") || return 1
+  backing=$(cryptsetup status "$name" | awk '/^[[:space:]]*device:/{print $2; exit}')
+  offset=$(cryptsetup status "$name" | awk '/^[[:space:]]*offset:/{print $2; exit}')
+  [[ -n $backing && -n $offset && -b $backing ]] || return 1
+  backing_sectors=$(blockdev --getsz "$backing") || return 1
+  mapper_sectors=$(blockdev --getsz "/dev/mapper/$name") || return 1
+  new_sectors=$((backing_sectors - offset))
+  if (( new_sectors <= mapper_sectors )); then
+    printf '==> %s already spans %s\n' "$name" "$backing"
+    return 0
+  fi
+  table=$(awk -v n="$new_sectors" '{$2 = n; print}' <<<"$table")
+  # Keyring refs look like :32:logon:cryptsetup:UUID — gone after switch_root.
+  if awk '{ exit !($5 ~ /^:/) }' <<<"$table"; then
+    printf '==> LUKS mapper %s still uses a keyring key; cannot grow unattended\n' "$name" >&2
+    return 1
+  fi
+  printf '%s\n' "$table" | dmsetup load "$name" || return 1
+  dmsetup resume "$name" || return 1
+}
+
 # Still the live overlay — deleting the lowerdir would unplug the running OS.
 [[ -e /omarchy-mac-overlay-write ]] && fail "still on the live overlay; reboot into the installed root first"
 
@@ -119,8 +152,8 @@ else
     exit 1
   fi
   if [[ $root_src == /dev/mapper/* ]]; then
-    cryptsetup resize "${root_src#/dev/mapper/}" \
-      || fail "cryptsetup resize failed"
+    grow_open_luks_mapper "${root_src#/dev/mapper/}" \
+      || fail "could not grow LUKS mapper ${root_src#/dev/mapper/}"
   fi
   if findmnt -n -o FSTYPE / | grep -qx btrfs; then
     btrfs filesystem resize max / \

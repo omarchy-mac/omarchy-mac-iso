@@ -1,0 +1,131 @@
+#!/bin/bash
+# Catch m1n1's USB uartproxy and write the Apple Device Tree (ADT).
+# Run on a SECOND Linux computer, as root, with the Mac fully off and
+# a data-capable USB-C cable already plugged in. Then short-press power
+# on the Mac. Does not write boot.bin, vendorfw, or firmware blobs.
+set -euo pipefail
+
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+log() { printf '==> %s\n' "$*"; }
+
+[[ ${1:-} == --raw-private ]] || {
+  printf 'This capture contains unique hardware identifiers and boot data.\n' >&2
+  printf 'Share it only through a private channel.\n' >&2
+  fail "rerun with --raw-private to acknowledge this"
+}
+
+(( EUID == 0 )) || fail "run as root on the second computer (sudo ./omarchy-mac-dump-adt)"
+[[ $(uname -s) == Linux ]] || fail "this catcher is for a Linux second computer"
+command -v python3 >/dev/null || fail "need python3"
+command -v git >/dev/null || fail "need git (to fetch Asahi m1n1 proxyclient)"
+
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+out=/tmp/omarchy-mac-adt-${stamp}
+cache=/var/tmp/omarchy-mac-adt-tools
+mkdir -p "$out" "$cache"
+chmod 700 "$out"
+
+m1n1=$cache/m1n1
+m1n1_ref=${OMARCHY_M1N1_REF:-60e53e7078c5cb7efce32d64bf50829e9401e44f}
+if [[ ! -d $m1n1/.git ]]; then
+  log "cloning AsahiLinux/m1n1"
+  rm -rf "$m1n1"
+  git clone --filter=blob:none --no-checkout https://github.com/AsahiLinux/m1n1.git "$m1n1"
+fi
+log "using pinned m1n1 $m1n1_ref"
+git -C "$m1n1" fetch --depth 1 origin "$m1n1_ref"
+git -C "$m1n1" checkout --detach FETCH_HEAD
+
+py=$cache/py
+if [[ ! -f $py/serial/__init__.py ]]; then
+  log "installing pyserial + construct into $py"
+  python3 -m pip install --target "$py" pyserial==3.5 construct==2.10.70
+fi
+
+{
+  printf 'm1n1: %s\n' "$(git -C "$m1n1" rev-parse HEAD)"
+  PYTHONPATH=$py python3 -m pip show pyserial construct 2>/dev/null \
+    | grep -E '^(Name|Version):'
+} >"$out/TOOL_VERSIONS.txt"
+
+export PYTHONPATH=$py:$m1n1/proxyclient${PYTHONPATH:+:$PYTHONPATH}
+export M1N1DEVICE=/dev/ttyACM0
+
+log "waiting for m1n1 USB gadget 1209:316d"
+log "Mac fully OFF (hold power until black), cable stays in, then short-press power"
+log "writing $out"
+
+python3 - "$out" <<'PY'
+import glob
+import os
+import sys
+import time
+
+out = sys.argv[1]
+
+
+def usb_m1n1_present():
+    for pth in glob.glob("/sys/bus/usb/devices/*/idProduct"):
+        try:
+            if open(pth).read().strip() != "316d":
+                continue
+            vid = open(pth.replace("idProduct", "idVendor")).read().strip()
+            if vid == "1209":
+                return True
+        except OSError:
+            pass
+    return False
+
+
+print("WATCHING for m1n1 1209:316d (uartproxy).", flush=True)
+while not usb_m1n1_present():
+    time.sleep(0.02)
+print(f"USB HIT {time.strftime('%H:%M:%S')} — holding proxy", flush=True)
+
+import serial
+from serial import SerialException
+
+sec = None
+deadline = time.time() + 8
+while time.time() < deadline and sec is None:
+    for dev in ("/dev/ttyACM1", "/dev/ttyACM0"):
+        if not os.path.exists(dev):
+            continue
+        try:
+            sec = serial.Serial(dev, 115200, timeout=1)
+            print(f"HOLD {dev}", flush=True)
+            break
+        except (OSError, SerialException) as exc:
+            print(f"{dev}: {type(exc).__name__}: {exc}", flush=True)
+    time.sleep(0.02)
+
+if sec is None:
+    sys.exit("missed the ~5s m1n1 window (cable/hub/port, or the Mac already reached U-Boot)")
+
+held_primary = sec.port == "/dev/ttyACM0"
+if held_primary:
+    time.sleep(0.3)
+    sec.close()
+    sec = None
+    deadline = time.time() + 3
+    while time.time() < deadline and not os.path.exists("/dev/ttyACM0"):
+        time.sleep(0.02)
+
+os.environ["M1N1DEVICE"] = "/dev/ttyACM0"
+from m1n1.setup import u
+from m1n1.adt import load_adt
+
+data = u.get_adt()
+dt_path = os.path.join(out, "dt.bin")
+nodes_path = os.path.join(out, "nodes.txt")
+open(dt_path, "wb").write(data)
+open(nodes_path, "w").write(str(load_adt(data)))
+print(f"OK {dt_path} {len(data)} bytes", flush=True)
+print(f"OK {nodes_path}", flush=True)
+print("Hold power on the Mac until it is off, then boot normally.", flush=True)
+print("Treat the output as private; it contains unique hardware data.", flush=True)
+PY
+
+chmod 600 "$out/dt.bin" "$out/nodes.txt" "$out/TOOL_VERSIONS.txt"
+log "PRIVATE: send $out only through a private channel"
+printf '%s\n' "$out"

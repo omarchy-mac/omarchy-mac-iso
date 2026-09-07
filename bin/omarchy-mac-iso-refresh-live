@@ -107,6 +107,15 @@ if [[ -n $live ]]; then
     "$mnt/usr/local/sbin/omarchy-mac-patch-j613-dcp"
   install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-patch-j613-dcp" \
     "$share/omarchy-mac-patch-j613-dcp"
+  install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-dump-board" \
+    "$mnt/usr/local/sbin/omarchy-mac-dump-board"
+  install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-validate" \
+    "$mnt/usr/local/sbin/omarchy-mac-validate"
+  install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-bluetooth-firmware" \
+    "$mnt/usr/local/sbin/omarchy-mac-bluetooth-firmware"
+  install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-bluetooth-firmware.service" \
+    "$mnt/etc/systemd/system/omarchy-mac-bluetooth-firmware.service"
+  systemctl --root="$mnt" enable omarchy-mac-bluetooth-firmware.service
   install -d "$share/m1n1"
   install -m644 "$repo_root/configs/m1n1/j613-dcp-overlay.dts" "$share/m1n1/j613-dcp-overlay.dts"
   install -m644 "$repo_root/configs/m1n1/j613-dcp.dtbo" "$share/m1n1/j613-dcp.dtbo"
@@ -171,6 +180,15 @@ if [[ -n $iso ]]; then
   iso_mnt=$(mount_if_needed "$iso")
   cp -a "$out" "$iso_mnt/initramfs-linux-asahi.img"
   echo "==> wrote $iso_mnt/initramfs-linux-asahi.img"
+  plain_out=/tmp/initramfs-linux-asahi-plain.img
+  echo "==> mkinitcpio unencrypted install initrd"
+  mkinitcpio -n \
+    -c "$repo_root/configs/usb-initcpio/mkinitcpio-install-plain.conf" \
+    "${mkinitcpio_dirs[@]}" \
+    -k "$kver" \
+    -g "$plain_out"
+  cp -a "$plain_out" "$iso_mnt/initramfs-linux-asahi-plain.img"
+  echo "==> wrote $iso_mnt/initramfs-linux-asahi-plain.img"
   live_out=/tmp/initramfs-omarchy-usb.img
   echo "==> mkinitcpio live initrd (quiet console before switch_root)"
   mkinitcpio -n \

@@ -1,0 +1,191 @@
+#!/bin/bash
+# Target finalization regressions. All mounts, chroots and services are mocked.
+set -euo pipefail
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+installer=$repo_root/configs/usb/rootfs/omarchy-mac-install
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+load_function() {
+  eval "$(sed -n "/^$1()/,/^}/p" "$installer")"
+}
+for name in bind_target_stub provision_installed_system finalize_installed_services; do
+  load_function "$name"
+done
+fail() { echo "$*" >&2; exit 1; }
+
+OMARCHY_INSTALL_DRY_RUN=1 provision_installed_system "$work/no-target" testuser >"$work/dry-run"
+[[ ! -e $work/no-target ]]
+grep -q 'dry-run: omarchy-apply-system' "$work/dry-run"
+echo 'ok - provisioning dry-run does not require or write a target log'
+
+root=$work/target
+mkdir -p "$root/usr/bin" "$root/usr/share/omarchy/bin"
+touch "$root/usr/bin/true"
+# The host's /usr/bin/true exists too: an ordinary host readlink or mount
+# through this absolute symlink must never be used to select the destination.
+ln -s /usr/bin/true "$root/usr/share/omarchy/bin/absolute"
+ln -s ../../../bin/true "$root/usr/share/omarchy/bin/relative"
+iso_chroot_stub_binds=()
+chroot() {
+  [[ $1 == "$root" && $2 == /bin/bash && $3 == -c && $5 == bash ]]
+  case $6 in
+    /usr/share/omarchy/bin/absolute|/usr/share/omarchy/bin/relative|/usr/bin/true)
+      printf '/usr/bin/true\n' ;;
+    /broken) return 1 ;;
+    /chroot-fails) return 126 ;;
+    *) return 44 ;;
+  esac
+}
+mount() {
+  [[ $1 == --bind && $2 == "$work/stub" && $3 == "$root/usr/bin/true" ]]
+  printf '%s\n' "$3" >>"$work/mounts"
+}
+bind_target_stub "$root" "$work/stub" /usr/share/omarchy/bin/absolute
+bind_target_stub "$root" "$work/stub" /usr/share/omarchy/bin/relative
+bind_target_stub "$root" "$work/stub" /usr/bin/true
+bind_target_stub "$root" "$work/stub" /missing 1
+[[ $(wc -l <"$work/mounts") == 1 && ${#iso_chroot_stub_binds[@]} == 1 ]]
+echo 'ok - absolute/relative aliases bind once to the target, never to the live host'
+for path in /missing /broken /chroot-fails; do
+  if (bind_target_stub "$root" "$work/stub" "$path") >"$work/error" 2>&1; then
+    fail "required stub unexpectedly accepted $path"
+  fi
+done
+for path in /broken /chroot-fails; do
+  if (bind_target_stub "$root" "$work/stub" "$path" 1) >"$work/error" 2>&1; then
+    fail "optional stub hid a resolution failure for $path"
+  fi
+done
+echo 'ok - required stubs and broken optional paths fail closed'
+
+for cmd in omarchy-apply-system omarchy-provision-user; do
+  touch "$root/usr/bin/$cmd"
+  chmod 755 "$root/usr/bin/$cmd"
+done
+desktop_full_name='Test User'
+desktop_email='test@example.invalid'
+seed_target_mkinitcpio_conf() { :; }
+target_chroot_bind() { echo bind >>"$work/events"; }
+target_chroot_unbind() { echo unbind >>"$work/events"; }
+install_boot_command_stubs() {
+  echo stub >>"$work/events"
+  return "$stub_status"
+}
+remove_boot_command_stubs() { echo unstub >>"$work/events"; }
+seed_tokyo_night() { echo theme >>"$work/events"; }
+seed_no_hardware_cursors() { echo cursors >>"$work/events"; }
+seed_iso_chroot_electron_wrappers() { echo wrappers >>"$work/events"; return "$wrapper_status"; }
+chroot() {
+  if [[ $2 == env ]]; then
+    echo apply >>"$work/events"
+    echo system-output
+    echo system-error >&2
+    return "$apply_status"
+  fi
+  [[ $2 == runuser && $3 == -u && $4 == testuser ]]
+  echo user >>"$work/events"
+  echo user-output
+  echo user-error >&2
+  return "$user_status"
+}
+
+for scenario in success apply-fails user-fails bind-fails wrapper-fails; do
+  stub_status=0 apply_status=0 user_status=0 wrapper_status=0 expected=0
+  case $scenario in
+    apply-fails) apply_status=23; expected=23 ;;
+    user-fails) user_status=24; expected=24 ;;
+    bind-fails) stub_status=25; expected=25 ;;
+    wrapper-fails) wrapper_status=26; expected=26 ;;
+  esac
+  : >"$work/events"
+  mkdir -p "$root/var/log"
+  : >"$root/var/log/omarchy-install.log"
+  # Match the caller: using if/|| here would disable Bash errexit.
+  set +e
+  provision_installed_system "$root" testuser >"$work/output" 2>&1
+  status=$?
+  set -e
+  [[ $status == "$expected" ]]
+  [[ $(tail -n1 "$work/events") == unbind ]]
+  grep -qx unstub "$work/events"
+  case $scenario in
+    success)
+      grep -qx wrappers "$work/events"
+      [[ $(sed -n '2p' "$work/events") == wrappers ]]
+      [[ $(sed -n '3p' "$work/events") == stub ]]
+      grep -qx system-output "$root/var/log/omarchy-install.log"
+      grep -qx user-error "$root/var/log/omarchy-install.log"
+      [[ -d $root/opt/packages ]]
+      ;;
+    apply-fails)
+      ! grep -qx user "$work/events"
+      grep -qx wrappers "$work/events"
+      grep -qx system-error "$root/var/log/omarchy-install.log"
+      ;;
+    user-fails)
+      grep -qx wrappers "$work/events"
+      grep -qx user-error "$root/var/log/omarchy-install.log"
+      ;;
+    bind-fails) ! grep -qx apply "$work/events" ;;
+    wrapper-fails)
+      ! grep -qx stub "$work/events"
+      ! grep -qx apply "$work/events"
+      ! grep -qx user "$work/events"
+      ;;
+  esac
+  echo "ok - $scenario preserves status, logs and chroot cleanup"
+done
+
+systemctl() { printf '%s\n' "$*" >>"$work/services"; }
+mkdir -p "$root/etc/NetworkManager/conf.d" "$root/etc/sysctl.d" \
+  "$root/etc/systemd/system.conf.d"
+cp "$repo_root/configs/usb/rootfs/nm-live.conf" "$root/etc/NetworkManager/conf.d/nm-live.conf"
+sed -i 's/wifi.backend=iwd/wifi.backend=wpa_supplicant/' "$root/etc/NetworkManager/conf.d/nm-live.conf"
+touch "$root/etc/sysctl.d/90-omarchy-quiet-console.conf" \
+  "$root/etc/systemd/system.conf.d/show-status.conf"
+finalize_installed_services "$root"
+[[ ! -e $root/etc/NetworkManager/conf.d/nm-live.conf ]]
+! grep -q auth-polkit "$root/etc/NetworkManager/conf.d/10-omarchy-mac-network.conf"
+grep -qx wifi.backend=wpa_supplicant "$root/etc/NetworkManager/conf.d/10-omarchy-mac-network.conf"
+[[ ! -e $root/etc/sysctl.d/90-omarchy-quiet-console.conf ]]
+[[ ! -e $root/etc/systemd/system.conf.d/show-status.conf ]]
+grep -qx -- "--root=$root disable omarchy-mac-quiet-console.service" "$work/services"
+grep -qx -- "--root=$root enable systemd-timesyncd.service" "$work/services"
+finalize_installed_services "$root"
+grep -qx wifi.backend=wpa_supplicant "$root/etc/NetworkManager/conf.d/10-omarchy-mac-network.conf"
+echo 'ok - installed services restore authorization, retain Wi-Fi backend and enable clock sync'
+
+# Exercise the actual caller's stdout contract, including a chatty patch helper.
+(
+  source "$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh"
+  load_function apply_system_esp_bootloader
+  SHARE=$work/share
+  here=$SHARE
+  mkdir -p "$SHARE" "$work/esp/EFI/BOOT" "$work/target/etc"
+  touch "$SHARE/grub-embed-system.cfg" "$work/esp/EFI/BOOT/BOOTAA64.EFI"
+  printf '#!/bin/bash\necho "DCP patch status"\nexit "${PATCH_STATUS:-0}"\n' \
+    >"$SHARE/omarchy-mac-patch-j613-dcp"
+  chmod +x "$SHARE/omarchy-mac-patch-j613-dcp"
+  findmnt() { printf '%s\n' "$work/esp"; }
+  esp_protected_hashes() { printf 'unchanged\n'; }
+  esp_copy_unique_kernels() { :; }
+  esp_has_bootloader() { return 0; }
+  write_piggyback_esp_grub() { :; }
+  esp_cleanup_nvme_live() { :; }
+  for patch_status in 0 1; do
+    export PATCH_STATUS=$patch_status
+    mode=$(apply_system_esp_bootloader /dev/test-esp root-uuid /dev/test-live)
+    [[ $mode == piggyback ]]
+    write_shared_esp_notice "$root" ESP-UUID "$mode"
+    assert_shared_esp_notice "$root" ESP-UUID "$mode"
+  done
+  if write_shared_esp_notice "$root" ESP-UUID $'DCP status\npiggyback'; then
+    fail 'contaminated ownership mode was accepted'
+  fi
+  rm "$root/etc/omarchy-mac-iso-shared-esp"
+  if assert_shared_esp_notice "$root" ESP-UUID piggyback; then
+    fail 'missing post-provisioning notice was accepted'
+  fi
+)
+echo 'ok - ESP caller keeps patch output out of ownership mode and verifies the notice'

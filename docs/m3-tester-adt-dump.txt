@@ -1,0 +1,71 @@
+Omarchy Apple Silicon — private ADT dump (second computer)
+===========================================================
+
+Skip this unless we ask, or unless dump-board showed simpledrm /
+simple-framebuffer and you are willing. Most testers only need
+omarchy-mac-dump-board (see README.txt).
+
+The Apple Device Tree (ADT) exists only in m1n1, in the few seconds
+before U-Boot. Linux never sees it. We use it to fill in display
+controller addresses for machines that are still on the simple
+framebuffer (15" Air, M3 Pro/Max, M3 iMac). One dump per SoC is
+enough (t8122 / t6030 / t6031) — you do not need both a 14" and a
+16" Pro.
+
+This does not write boot.bin, vendorfw, or firmware. Do not run
+other m1n1 scripts. Do not update-m1n1.
+
+The raw ADT contains serial numbers, chip/device IDs, MAC addresses,
+and other unique hardware data. It cannot be safely anonymized without
+losing bring-up information. Never attach it to a public issue. Send it
+only through a private channel to a developer who explicitly requested it.
+
+
+What you need
+-------------
+- The Mac already has Asahi m1n1 (UEFI-only or a Fedora/Omarchy
+  install that boots through m1n1).
+- A second Linux computer (laptop/desktop).
+- A data-capable USB-C cable (not charge-only). Some hubs fail;
+  try the other Type-C port on the Mac.
+
+
+On the second computer
+----------------------
+Copy src/omarchy-mac-dump-adt from this drop (or this folder).
+
+  sudo ./omarchy-mac-dump-adt --raw-private
+
+Leave that running. It waits for USB device 1209:316d.
+
+
+On the Mac
+----------
+1. Fully power OFF — hold power until the screen is black. Sleep
+   is not enough.
+2. Keep the cable plugged into both machines.
+3. Short-press power. Do not unplug.
+
+If GRUB, Fedora, or Omarchy appears, we missed the ~5 second
+window. Power off fully and run the script again.
+
+
+When it works
+-------------
+The script prints a directory like:
+
+  /tmp/omarchy-mac-adt-YYYYMMDDThhmmssZ
+
+Send dt.bin, nodes.txt, and TOOL_VERSIONS.txt from that directory through
+the agreed private channel.
+
+Then hold power on the Mac until it is off, and boot normally.
+
+
+If it fails
+-----------
+- Permission denied on /dev/ttyACM*: you are not root.
+- Never sees 1209:316d: charge-only cable, bad hub, or the Mac
+  was not fully off.
+- Reaches U-Boot immediately: start the script before pressing
+  power, not after.

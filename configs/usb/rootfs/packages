@@ -28,6 +28,9 @@ obsidian-appimage
 # speaker-tuning.sh needs the LV2 limiter or the Asahi filter chain never
 # instantiates. omarchy-pkg-add is stubbed in the ISO chroot.
 lsp-plugins-lv2
+# hardware/apple/video-decode.sh cannot install these while offline.
+avd-fw
+libva-v4l2_request-avd
 aether
 alsa-utils
 asdcontrol

@@ -1,0 +1,81 @@
+#!/bin/bash
+# Turn a completed --usb --rootfs build directory into a portable tester drop.
+set -euo pipefail
+
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+log() { printf '==> %s\n' "$*" >&2; }
+
+if (( $# != 2 )); then
+  printf 'usage: %s BUILD_DIR NEW_DROP_DIR\n' "$0" >&2
+  exit 2
+fi
+
+repo_root=$(cd "$(dirname "$0")/.." && pwd)
+build_dir=$(realpath "$1")
+drop_dir=$2
+
+[[ -d $build_dir ]] || fail "build directory not found: $build_dir"
+[[ ! -e $drop_dir ]] || fail "drop destination already exists: $drop_dir"
+command -v zstd >/dev/null || fail "zstd is required"
+
+for name in payload.img vmlinuz-linux-asahi initramfs-omarchy-usb.img \
+  initramfs-linux-asahi.img initramfs-linux-asahi-plain.img \
+  BOOTAA64-NVME.EFI grub-nvme-installer.cfg BUILD_INFO SHA256SUMS; do
+  [[ -f $build_dir/$name ]] || fail "build is missing $name"
+done
+
+log "verifying build checksums"
+(cd "$build_dir" && sha256sum -c SHA256SUMS)
+
+mkdir -p "$drop_dir/src"
+if [[ -f $build_dir/payload.img.zst ]]; then
+  log "reusing $build_dir/payload.img.zst"
+  cp "$build_dir/payload.img.zst" "$drop_dir/payload.img.zst"
+else
+  log "compressing payload.img"
+  zstd -T0 -19 "$build_dir/payload.img" -o "$drop_dir/payload.img.zst"
+fi
+
+for name in vmlinuz-linux-asahi initramfs-omarchy-usb.img \
+  initramfs-linux-asahi.img initramfs-linux-asahi-plain.img \
+  BOOTAA64-NVME.EFI grub-nvme-installer.cfg linux-asahi.config; do
+  [[ -f $build_dir/$name ]] || continue
+  cp "$build_dir/$name" "$drop_dir/$name"
+done
+
+cp "$repo_root/scripts/macos/place-nvme-installer.sh" \
+  "$drop_dir/place-nvme-installer.sh"
+cp "$repo_root/docs/m3-tester-README.txt" "$drop_dir/README.txt"
+cp "$repo_root/docs/m3-tester-adt-dump.txt" "$drop_dir/ADT-DUMP.txt"
+cp "$repo_root/configs/usb/rootfs/omarchy-mac-dump-board" \
+  "$drop_dir/src/omarchy-mac-dump-board"
+cp "$repo_root/configs/usb/rootfs/omarchy-mac-validate" \
+  "$drop_dir/src/omarchy-mac-validate"
+cp "$repo_root/scripts/omarchy-mac-dump-adt" \
+  "$drop_dir/src/omarchy-mac-dump-adt"
+cp "$repo_root/configs/m1n1/j613-dcp-overlay.dts" \
+  "$drop_dir/src/j613-dcp-overlay.dts"
+cp "$repo_root/configs/m1n1/patch-boot-bin-dcp.py" \
+  "$drop_dir/src/patch-boot-bin-dcp.py"
+
+cp "$build_dir/BUILD_INFO" "$drop_dir/BUILD_INFO"
+{
+  printf 'packaged_utc: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'package_format: Apple Silicon tester drop (zstd payload)\n'
+} >>"$drop_dir/BUILD_INFO"
+
+chmod a+r "$drop_dir"/* "$drop_dir"/src/*
+chmod a+x "$drop_dir/place-nvme-installer.sh" "$drop_dir"/src/omarchy-mac-*
+
+log "writing tester-drop SHA256SUMS"
+(
+  cd "$drop_dir"
+  mapfile -d '' files < <(
+    find . -type f ! -name SHA256SUMS -printf '%P\0' | sort -z
+  )
+  sha256sum -- "${files[@]}"
+) >"$drop_dir/SHA256SUMS"
+chmod a+r "$drop_dir/SHA256SUMS"
+
+log "wrote tester drop $drop_dir"
+printf '%s\n' "$drop_dir"

@@ -1,0 +1,136 @@
+#!/bin/bash
+# Real bind/chroot rehearsal using packaged paths and synthetic setup commands.
+# Default: private user/mount namespace, synthetic proc/sys/dev, bind-backed log.
+# For real @log: sudo unshare --mount --propagation private bash "$0" --inside --btrfs PACKAGE
+set -euo pipefail
+export LC_ALL=C
+if [[ ${1:-} != --inside ]]; then
+  exec unshare --user --map-root-user --mount --propagation private bash "$0" --inside "$@"
+fi
+shift
+use_btrfs=0
+if [[ ${1:-} == --btrfs ]]; then use_btrfs=1; shift; fi
+package=$(realpath "${1:?Pass the built omarchy package}")
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+installer=$repo_root/configs/usb/rootfs/omarchy-mac-install
+work=$(mktemp -d)
+root=$work/target
+mkdir -p "$root" "$work/storage"
+cleanup() {
+  local path
+  while read -r path; do
+    umount "$path" || return 1
+  done < <(findmnt -rn -o TARGET | awk -v root="$work/" 'index($0, root)==1' | sort -r)
+  if findmnt -rn -o TARGET | awk -v root="$work/" 'index($0, root)==1 {found=1} END {exit !found}'; then
+    printf 'Retaining rehearsal directory with mounted filesystems: %s\n' "$work" >&2
+    return 1
+  fi
+  rm -rf "$work"
+}
+trap cleanup EXIT
+if (( use_btrfs )); then
+  truncate -s 256M "$work/storage.img"
+  mkfs.btrfs -q -f "$work/storage.img"
+  mount -o loop "$work/storage.img" "$work/storage"
+  btrfs subvolume create "$work/storage/@log" >/dev/null
+else
+  mkdir "$work/storage/@log"
+fi
+mkdir -p "$root/usr/bin" "$root/usr/share/omarchy/bin" "$root/var/log" "$root/etc"
+ln -s usr/bin "$root/bin"
+ln -s usr/lib "$root/lib"
+commands=(omarchy-pkg-add omarchy-pkg-aur-add omarchy-install-1password
+  omarchy-cmd-electron-gl-wrap omarchy-mise-install)
+members=(usr/share/omarchy/install/post-install/optional-apps.sh)
+for command in "${commands[@]}"; do
+  members+=("usr/bin/$command" "usr/share/omarchy/bin/$command")
+done
+bsdtar --no-same-owner -xf "$package" -C "$root" "${members[@]}"
+[[ $(readlink "$root/usr/share/omarchy/bin/omarchy-mise-install") == /usr/bin/omarchy-mise-install ]]
+copy_binary() {
+  local binary=$1 library
+  cp "$binary" "$root/usr/bin/"
+  while read -r library; do
+    [[ -f $library ]] || continue
+    mkdir -p "$root$(dirname "$library")"
+    cp -L "$library" "$root$library"
+  done < <(ldd "$binary" | awk '{ for (i=1;i<=NF;i++) if ($i ~ /^\//) print $i }')
+}
+for command in bash readlink env; do copy_binary "/usr/bin/$command"; done
+cp /usr/bin/true "$root/usr/bin/mise"
+# User identity and setup leaves are synthetic; path resolution, chroot,
+# mount setup, actual stubs, failure handling and log persistence are real.
+printf '#!/bin/bash\nshift 3\nexec "$@"\n' >"$root/usr/bin/runuser"
+printf '#!/bin/bash\n/usr/share/omarchy/bin/omarchy-pkg-add must-be-stubbed\n/usr/share/omarchy/bin/omarchy-mise-install must-be-stubbed\necho system-output\necho system-error >&2\nexit "${REHEARSAL_APPLY_STATUS:-0}"\n' \
+  >"$root/usr/bin/omarchy-apply-system"
+printf '#!/bin/bash\necho user-output\necho user-error >&2\nexit "${REHEARSAL_USER_STATUS:-0}"\n' \
+  >"$root/usr/bin/omarchy-provision-user"
+chmod +x "$root/usr/bin/runuser" "$root/usr/bin/omarchy-apply-system" "$root/usr/bin/omarchy-provision-user"
+mount --bind "$work/storage/@log" "$root/var/log"
+if (( use_btrfs == 0 )); then
+  # An unprivileged namespace cannot bind the host's proc/sys mounts.
+  # Pre-mounted empty fixtures let the real bind helper exercise its remaining
+  # mounts. The root --btrfs run exercises the host pseudo-filesystem binds too.
+  for path in proc sys dev dev/pts; do
+    mkdir -p "$root/$path"
+    mount -t tmpfs tmpfs "$root/$path"
+  done
+fi
+caller_mounts=$(findmnt -rn -o TARGET | awk -v root="$root/" 'index($0, root)==1' | sort)
+mkdir -p "$root/boot/efi/EFI/BOOT"
+printf 'dummy-owner\n' >"$root/boot/efi/EFI/BOOT/BOOTAA64.EFI"
+esp_before=$(sha256sum "$root/boot/efi/EFI/BOOT/BOOTAA64.EFI")
+host_hashes() {
+  local command
+  for command in "${commands[@]}"; do
+    if [[ -f /usr/bin/$command ]]; then sha256sum "/usr/bin/$command"; fi
+  done
+}
+host_before=$(host_hashes)
+package_before=$(sha256sum "$root/usr/bin/omarchy-pkg-add")
+load_function() { eval "$(sed -n "/^$1()/,/^}/p" "$installer")"; }
+for function in bind_target_stub install_boot_command_stubs remove_boot_command_stubs \
+  target_chroot_bind target_chroot_unbind provision_installed_system; do
+  load_function "$function"
+done
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+iso_chroot_stub_binds=() target_chroot_bound=()
+desktop_full_name='Rehearsal User' desktop_email='rehearsal@example.invalid'
+seed_target_mkinitcpio_conf() { :; }
+seed_tokyo_night() { :; }
+seed_no_hardware_cursors() { :; }
+seed_iso_chroot_electron_wrappers() { return "${REHEARSAL_WRAPPER_STATUS:-0}"; }
+for scenario in success apply-fails user-fails wrapper-fails missing-required; do
+  export REHEARSAL_APPLY_STATUS=0 REHEARSAL_USER_STATUS=0 REHEARSAL_WRAPPER_STATUS=0
+  expected=0
+  case $scenario in
+    apply-fails) REHEARSAL_APPLY_STATUS=23; expected=23 ;;
+    user-fails) REHEARSAL_USER_STATUS=24; expected=24 ;;
+    wrapper-fails) REHEARSAL_WRAPPER_STATUS=25; expected=25 ;;
+    missing-required) mv "$root/usr/bin/omarchy-pkg-add" "$root/usr/bin/pkg-add.saved"; expected=1 ;;
+  esac
+  : >"$root/var/log/omarchy-install.log"
+  set +e
+  provision_installed_system "$root" rehearsal
+  status=$?
+  set -e
+  [[ $status == "$expected" ]] || fail "$scenario status $status, expected $expected"
+  if [[ $scenario == missing-required ]]; then
+    mv "$root/usr/bin/pkg-add.saved" "$root/usr/bin/omarchy-pkg-add"
+  elif [[ $scenario != wrapper-fails ]]; then
+    grep -qx system-output "$root/var/log/omarchy-install.log"
+    if [[ $scenario != apply-fails ]]; then grep -qx user-error "$root/var/log/omarchy-install.log"; fi
+  fi
+  [[ $(host_hashes) == "$host_before" ]] || fail 'live-host command changed'
+  [[ $(sha256sum "$root/usr/bin/omarchy-pkg-add") == "$package_before" ]] || fail 'target command still stubbed or modified'
+  [[ $(sha256sum "$root/boot/efi/EFI/BOOT/BOOTAA64.EFI") == "$esp_before" ]] || fail 'dummy ESP changed'
+  # Only caller-owned mounts may remain under the target.
+  remaining=$(findmnt -rn -o TARGET | awk -v root="$root/" 'index($0, root)==1' | sort)
+  [[ $remaining == "$caller_mounts" ]] || fail "leaked target mounts: $remaining"
+  before=$(sha256sum "$root/var/log/omarchy-install.log" | cut -d ' ' -f1)
+  umount "$root/var/log"
+  mount --bind "$work/storage/@log" "$root/var/log"
+  [[ $(sha256sum "$root/var/log/omarchy-install.log" | cut -d ' ' -f1) == "$before" ]]
+  printf 'ok - real chroot %s: status, host, target, ESP, mounts, persistent log\n' "$scenario"
+done
+printf 'log backing: btrfs=%s (1 means real @log subvolume)\n' "$use_btrfs"

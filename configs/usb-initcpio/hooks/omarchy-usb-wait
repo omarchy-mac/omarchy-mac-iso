@@ -1,10 +1,12 @@
 #!/usr/bin/ash
 # SPDX-License-Identifier: MIT
 #
-# Root is on USB. dwc3-apple can take several seconds. Wait for the
-# device the next hook needs: cryptdevice UUID (LUKS) before encrypt,
-# otherwise root UUID before filesystems. Do not treat LABEL=OMARCHYROOT
-# as success when a UUID is set: NVMe hole installs use that label too.
+# Wait for the device the next hook needs: cryptdevice UUID (LUKS) before
+# encrypt, otherwise root UUID before filesystems. Used for USB-installed
+# roots (dwc3-apple can take several seconds) and NVMe hole installs (the
+# asahi hook can mount the ESP from the device tree before udev has created
+# /dev/disk/by-uuid). Do not treat LABEL=OMARCHYROOT as success when a UUID
+# is set: that label also exists on other Omarchy roots.
 
 hang() {
   if command -v plymouth >/dev/null 2>&1; then
@@ -12,6 +14,10 @@ hang() {
   fi
   echo "==> $*" >/dev/console
   echo "==> $*"
+  echo "==> cmdline: $(cat /proc/cmdline 2>/dev/null)" >/dev/console
+  echo "==> block devices:" >/dev/console
+  blkid >/dev/console 2>/dev/null || true
+  ls -l /dev/nvme* /dev/disk/by-uuid /dev/disk/by-label >/dev/console 2>/dev/null || true
   while true; do
     sleep 3600
   done
@@ -31,23 +37,66 @@ uuid_from_cmdline() {
   return 1
 }
 
-run_hook() {
-  if command -v udevadm >/dev/null 2>&1; then
-    udevadm settle --timeout=10 2>/dev/null
-    udevadm trigger --action=add 2>/dev/null
-    udevadm settle --timeout=10 2>/dev/null
+lower_uuid() {
+  if command -v sed >/dev/null 2>&1; then
+    echo "$1" | sed 'y/ABCDEF/abcdef/'
+  else
+    echo "$1"
   fi
+}
+
+# udev's by-uuid link can lag the device itself, especially on Apple NVMe
+# where the asahi hook already mounted the ESP. Walk blkid and create the
+# symlink the filesystems/encrypt hooks resolve.
+ensure_uuid_symlink() {
+  local want=$1 id dev
+  [ -n "$want" ] || return 1
+  [ -e /dev/disk/by-uuid/"$want" ] && return 0
+  if [ -d /dev/disk/by-uuid ]; then
+    for dev in /dev/disk/by-uuid/*; do
+      [ -e "$dev" ] || continue
+      [ "$(lower_uuid "${dev##*/}")" = "$(lower_uuid "$want")" ] && return 0
+    done
+  fi
+  command -v blkid >/dev/null 2>&1 || return 1
+  for dev in /dev/nvme[0-9]*n[0-9]*p[0-9]* /dev/nvme[0-9]*n[0-9]* \
+    /dev/sd[a-z]* /dev/vd[a-z]* /dev/mapper/*; do
+    [ -b "$dev" ] || continue
+    id=$(blkid -s UUID -o value "$dev" 2>/dev/null) || continue
+    [ -n "$id" ] || continue
+    if [ "$id" = "$want" ] || [ "$(lower_uuid "$id")" = "$(lower_uuid "$want")" ]; then
+      mkdir -p /dev/disk/by-uuid
+      ln -sf "$dev" /dev/disk/by-uuid/"$want"
+      return 0
+    fi
+  done
+  return 1
+}
+
+kick_udev() {
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm settle --timeout=5 2>/dev/null
+    udevadm trigger --action=add 2>/dev/null
+    udevadm settle --timeout=5 2>/dev/null
+  fi
+}
+
+run_hook() {
+  modprobe nvme-apple 2>/dev/null || true
+  modprobe nvme 2>/dev/null || true
+  modprobe btrfs 2>/dev/null || true
+  kick_udev
   sleep 2
 
   crypt_uuid=$(uuid_from_cmdline cryptdevice || true)
   uuid=$(uuid_from_cmdline root || true)
   i=0
   while [ "$i" -lt 45 ]; do
-    if [ -n "$crypt_uuid" ] && [ -e /dev/disk/by-uuid/"$crypt_uuid" ]; then
+    if [ -n "$crypt_uuid" ] && ensure_uuid_symlink "$crypt_uuid"; then
       echo "==> omarchy-usb-wait: cryptdevice UUID=$crypt_uuid" >/dev/console
       return 0
     fi
-    if [ -z "$crypt_uuid" ] && [ -n "$uuid" ] && [ -e /dev/disk/by-uuid/"$uuid" ]; then
+    if [ -z "$crypt_uuid" ] && [ -n "$uuid" ] && ensure_uuid_symlink "$uuid"; then
       echo "==> omarchy-usb-wait: root UUID=$uuid" >/dev/console
       return 0
     fi
@@ -55,8 +104,9 @@ run_hook() {
       echo "==> omarchy-usb-wait: root label=OMARCHYROOT" >/dev/console
       return 0
     fi
+    [ $((i % 5)) -eq 0 ] && kick_udev
     sleep 1
     i=$((i + 1))
   done
-  hang "omarchy-usb-wait: root device never appeared (USB not enumerated?)"
+  hang "omarchy-usb-wait: root device never appeared (NVMe/USB not enumerated?)"
 }

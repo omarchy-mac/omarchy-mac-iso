@@ -1,0 +1,58 @@
+#!/bin/bash
+# Run real user finalization against read-only @/@home with disposable overlays.
+# Usage: sudo bash test/provisioning-user-chroot ROOT_DEVICE USER INSTALLER
+# System setup is skipped: this regression targets the following user stage.
+set -euo pipefail
+if [[ ${1:-} != --inside ]]; then
+  exec unshare --mount --propagation private bash "$0" --inside "$@"
+fi
+shift
+root_device=${1:?Root filesystem device required}
+user=${2:?Target user required}
+installer=${3:?Installer script required}
+[[ $user =~ ^[a-z_][a-z0-9_-]*$ ]]
+(( EUID == 0 ))
+work=$(mktemp -d)
+cleanup() {
+  local path
+  while read -r path; do umount "$path" || return 1; done < <(
+    findmnt -rn -o TARGET | awk -v prefix="$work/" 'index($0,prefix)==1' | sort -r
+  )
+  rm -rf "$work"
+}
+trap cleanup EXIT
+mkdir -p "$work/lower" "$work/root" "$work/home-lower" "$work/home" "$work/upper" "$work/overlay-work"
+mount -o ro,subvol=@ "$root_device" "$work/lower"
+mount -o ro,subvol=@home "$root_device" "$work/home-lower"
+cp -a "$work/home-lower/$user" "$work/home/$user"
+mount -t overlay overlay -o "lowerdir=$work/lower,upperdir=$work/upper,workdir=$work/overlay-work" "$work/root"
+mount --bind "$work/home" "$work/root/home"
+# Require the installer to create the wrapper even when the source root has
+# already been repaired. This removal affects only the disposable overlay.
+rm -f "$work/root/usr/local/bin/chromium"
+load_function() { eval "$(sed -n "/^$1()/,/^}/p" "$installer")"; }
+for function in target_chroot_bind target_chroot_unbind bind_target_stub \
+  install_boot_command_stubs remove_boot_command_stubs seed_target_mkinitcpio_conf \
+  seed_tokyo_night seed_no_hardware_cursors seed_iso_chroot_electron_wrappers \
+  provision_installed_system; do
+  load_function "$function"
+done
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+SHARE=/usr/local/share/omarchy-mac-iso
+here=$(dirname "$installer")
+desktop_full_name='' desktop_email=''
+iso_chroot_stub_binds=() target_chroot_bound=()
+chroot() {
+  if [[ $2 == env && " $* " == *' omarchy-apply-system '* ]]; then
+    printf 'rehearsal: system setup already passed; exercising real user finalization\n'
+  else
+    command chroot "$@"
+  fi
+}
+mkdir -p "$work/root/var/log"
+provision_installed_system "$work/root" "$user"
+[[ -x $work/root/usr/local/bin/chromium ]]
+[[ -f $work/home/$user/.local/state/omarchy/done/finalize-user ]]
+grep -q '^Exec=/usr/local/bin/chromium' "$work/home/$user/.local/share/applications/chromium.desktop"
+grep -q '^x-scheme-handler/https=chromium.desktop' "$work/home/$user/.config/mimeapps.list"
+printf 'ok - actual user setup, Chromium launcher/defaults and completion marker\n'

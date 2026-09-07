@@ -1,0 +1,23 @@
+#!/bin/bash
+# LUKS2 open defaults to the kernel keyring. After switch_root that
+# keyring is gone, so first-boot cryptsetup resize / dmsetup reload
+# cannot find the volume key. Keep the key in the dm-crypt table.
+
+build() {
+  if [[ ! -x $BUILDROOT/usr/bin/cryptsetup ]]; then
+    add_binary cryptsetup
+  fi
+  mv "$BUILDROOT/usr/bin/cryptsetup" "$BUILDROOT/usr/bin/cryptsetup.real"
+  cat >"$BUILDROOT/usr/bin/cryptsetup" <<'EOF'
+#!/bin/sh
+exec /usr/bin/cryptsetup.real --disable-keyring "$@"
+EOF
+  chmod 755 "$BUILDROOT/usr/bin/cryptsetup"
+}
+
+help() {
+  cat <<HELPEOF
+Wrap cryptsetup so LUKS open stores the volume key in dm-crypt, not the
+initrd keyring. Needed so consume can grow the mapper without a passphrase.
+HELPEOF
+}

@@ -1,0 +1,158 @@
+#!/bin/bash
+# Model macOS-erased roots and still-locked neighboring installations.
+set -euo pipefail
+repository=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "${OMARCHY_TEST_ESP_HELPER:-$repository/configs/usb/rootfs/omarchy-mac-esp.sh}"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+old_uuid=10000000-1111-2222-3333-444444444444
+new_uuid=20000000-1111-2222-3333-444444444444
+luks_uuid=30000000-1111-2222-3333-444444444444
+other_uuid=40000000-1111-2222-3333-444444444444
+failures=0
+check() {
+  local description=$1
+  shift
+  if "$@"; then
+    printf 'ok   - %s\n' "$description"
+  else
+    printf 'FAIL - %s\n' "$description"
+    failures=$((failures + 1))
+  fi
+}
+
+for mode in piggyback owned; do
+  if [[ $mode == owned ]] && ! command -v grub-mkstandalone >/dev/null; then
+    echo 'skip - owned reinstall fixtures require grub-mkstandalone'
+    continue
+  fi
+  for scenario in erased-plain erased-encrypted erased-probed present-plain locked-encrypted locked-probed customized discovery-failed discovery-empty; do
+    esp=$work/$mode-$scenario
+    export ESP_UUID_DIR=$esp/devices
+    mkdir -p "$esp/EFI/BOOT" "$esp/grub/omarchy-roots" "$ESP_UUID_DIR" \
+      "$esp/EFI/omarchy/$old_uuid" "$esp/m1n1" "$esp/asahi" "$esp/vendorfw"
+    printf 'owner-loader\n' >"$esp/EFI/BOOT/BOOTAA64.EFI"
+    printf 'source /grub/custom.cfg\n' >"$esp/grub/grub.cfg"
+    printf 'source /grub/omarchy.cfg\n' >"$esp/grub/custom.cfg"
+    printf 'preserved-kernel\n' >"$esp/EFI/omarchy/$old_uuid/vmlinuz"
+    for directory in m1n1 asahi vendorfw; do
+      printf 'protected\n' >"$esp/$directory/fixture"
+    done
+    printf '%s\n' "$old_uuid" >"$esp/grub/omarchy-default-root"
+    encryption=""
+    if [[ $scenario == *encrypted || $scenario == locked-probed ]]; then
+      encryption=$luks_uuid
+    fi
+    grub_root_menu_entries "Omarchy Mac (root $old_uuid)" \
+      "$(root_linux_args "$old_uuid" "$encryption")" \
+      "/EFI/omarchy/$old_uuid" 1 >"$esp/grub/omarchy-roots/$old_uuid.cfg"
+    if [[ $scenario == present-plain ]]; then
+      : >"$ESP_UUID_DIR/$old_uuid"
+    elif [[ $scenario == locked-encrypted ]]; then
+      # Inner btrfs UUID intentionally absent: only the locked container exists.
+      : >"$ESP_UUID_DIR/$luks_uuid"
+    elif [[ $scenario == customized ]]; then
+      printf '# User-customized; do not infer its lifetime.\n' >>"$esp/grub/omarchy-roots/$old_uuid.cfg"
+    fi
+    before=$(esp_protected_hashes "$esp")
+    owner_before=$(sha256sum "$esp/EFI/BOOT/BOOTAA64.EFI" "$esp/grub/grub.cfg" "$esp/grub/custom.cfg")
+    fragment_before=$(sha256sum "$esp/grub/omarchy-roots/$old_uuid.cfg")
+    (
+      if [[ $scenario == discovery-failed ]]; then
+        unset ESP_UUID_DIR
+        lsblk() { return 1; }
+      elif [[ $scenario == discovery-empty ]]; then
+        unset ESP_UUID_DIR
+        lsblk() { return 0; }
+      elif [[ $scenario == erased-probed ]]; then
+        unset ESP_UUID_DIR
+        lsblk() { printf '\n%s\n' "$new_uuid"; }
+      elif [[ $scenario == locked-probed ]]; then
+        unset ESP_UUID_DIR
+        lsblk() { printf '\n%s\n%s\n' "$new_uuid" "$luks_uuid"; }
+      fi
+      if [[ $mode == owned ]]; then
+        write_owned_esp_grub "$esp" "$new_uuid" "$repository/configs/usb/grub-embed-system.cfg"
+      else
+        # Exactly the free-space call: no old-root or old-LUKS replacement args.
+        write_piggyback_esp_grub "$esp" "$new_uuid"
+      fi
+    )
+    check "$mode $scenario keeps new root even before its udev UUID appears" \
+      grep -q "root=UUID=$new_uuid" "$esp/grub/omarchy.cfg"
+    if [[ $scenario == erased-* ]]; then
+      check "$mode $scenario transfers erased default to the new root" \
+        grep -qx "$new_uuid" "$esp/grub/omarchy-default-root"
+      check "$mode $scenario activates the new default in GRUB" \
+        grep -qx "set default='Omarchy Mac (root $new_uuid)'" "$esp/grub/omarchy.cfg"
+      check "$mode $scenario shows only the two new-root options" \
+        test "$(grep -c '^menuentry ' "$esp/grub/omarchy.cfg")" -eq 2
+      check "$mode $scenario omits every reference to the erased root" \
+        bash -c '! grep -q "$1" "$2"' _ "$old_uuid" "$esp/grub/omarchy.cfg"
+    else
+      check "$mode $scenario preserves the existing or uncertain default" \
+        grep -qx "$old_uuid" "$esp/grub/omarchy-default-root"
+      check "$mode $scenario retains both roots in the active menu" \
+        test "$(grep -c '^menuentry ' "$esp/grub/omarchy.cfg")" -eq 4
+    fi
+    check "$mode $scenario retains the old fragment for recovery" \
+      test "$(sha256sum "$esp/grub/omarchy-roots/$old_uuid.cfg")" = "$fragment_before"
+    check "$mode $scenario does not delete saved kernels" \
+      grep -qx preserved-kernel "$esp/EFI/omarchy/$old_uuid/vmlinuz"
+    check "$mode $scenario preserves Apple/Asahi files" \
+      test "$(esp_protected_hashes "$esp")" = "$before"
+    if [[ $mode == piggyback ]]; then
+      check "$mode $scenario does not rewrite the owner or custom configuration" \
+        test "$(sha256sum "$esp/EFI/BOOT/BOOTAA64.EFI" "$esp/grub/grub.cfg" "$esp/grub/custom.cfg")" = "$owner_before"
+    fi
+    if command -v grub-script-check >/dev/null; then
+      check "$mode $scenario produces valid GRUB syntax" grub-script-check "$esp/grub/omarchy.cfg"
+    fi
+  done
+done
+
+# A disappeared non-default root is omitted without changing a living default.
+esp=$work/piggyback-present-plain
+export ESP_UUID_DIR=$esp/devices
+grub_root_menu_entries "Omarchy Mac (root $other_uuid)" \
+  "$(root_linux_args "$other_uuid")" "/EFI/omarchy/$other_uuid" 1 \
+  >"$esp/grub/omarchy-roots/$other_uuid.cfg"
+write_piggyback_esp_grub "$esp" "$new_uuid"
+check 'absent non-default root is omitted' \
+  bash -c '! grep -q "$1" "$2"' _ "$other_uuid" "$esp/grub/omarchy.cfg"
+check 'absent non-default root does not steal the living default' \
+  grep -qx "$old_uuid" "$esp/grub/omarchy-default-root"
+: >"$ESP_UUID_DIR/$other_uuid"
+write_piggyback_esp_grub "$esp" "$new_uuid"
+check 'a reconnected root can rejoin the menu from its retained fragment' \
+  grep -q "root=UUID=$other_uuid" "$esp/grub/omarchy.cfg"
+
+# Full NVMe handoff: restore the repaired owner, then install into free space
+# after macOS erased its former root. The default marker survives placement.
+esp=$work/nvme-free-space
+export ESP_UUID_DIR=$esp/devices
+mkdir -p "$esp/EFI/BOOT" "$esp/grub/omarchy-roots" "$ESP_UUID_DIR"
+printf 'temporary-live-loader\n' >"$esp/EFI/BOOT/BOOTAA64.EFI"
+printf 'repaired-owner-loader\n' >"$esp/EFI/BOOT/BOOTAA64.EFI.omarchy-nvme-bak"
+: >"$esp/omarchy-nvme-live"
+: >"$esp/grub/omarchy-nvme-had-bootloader"
+printf 'source /grub/custom.cfg\n' >"$esp/grub/grub.cfg"
+printf 'source /grub/omarchy.cfg\n' >"$esp/grub/custom.cfg"
+printf '%s\n' "$old_uuid" >"$esp/grub/omarchy-default-root"
+grub_root_menu_entries "Omarchy Mac (root $old_uuid)" \
+  "$(root_linux_args "$old_uuid" "$luks_uuid")" "/EFI/omarchy/$old_uuid" 1 \
+  >"$esp/grub/omarchy-roots/$old_uuid.cfg"
+esp_restore_nvme_preinstall_bootloader "$esp"
+write_piggyback_esp_grub "$esp" "$new_uuid"
+esp_cleanup_nvme_live "$esp" nvme
+check 'NVMe free-space reinstall restores the compatible owner' \
+  grep -qx repaired-owner-loader "$esp/EFI/BOOT/BOOTAA64.EFI"
+check 'NVMe free-space reinstall transfers the erased default' \
+  grep -qx "$new_uuid" "$esp/grub/omarchy-default-root"
+check 'NVMe free-space reinstall has only the new normal and verbose choices' \
+  test "$(grep -c '^menuentry ' "$esp/grub/omarchy.cfg")" -eq 2
+check 'NVMe free-space reinstall has no erased UUID in the active menu' \
+  bash -c '! grep -q "$1" "$2"' _ "$old_uuid" "$esp/grub/omarchy.cfg"
+
+(( failures == 0 )) || { printf '%s reinstall GRUB tests failed\n' "$failures"; exit 1; }
+echo 'all reinstall GRUB checks passed'

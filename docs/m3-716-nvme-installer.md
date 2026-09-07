@@ -1,5 +1,8 @@
 # M3 Air — 7.1.6 NVMe installer test
 
+> Historical metal record. Use `README.md` and the packaged tester README for
+> current placement instructions; filenames and GRUB restoration have changed.
+
 First metal pass (2026-09-03): LUKS free-space install, then consume grew `OMARCHYROOT` 119.7G → 131.7G. APFS / Recovery stayed. Display was `simpledrm`.
 
 Use this as a **checklist on the Mac** or as a **prompt for an agent sitting with you**. It is only the no-USB installer layout (hole + `omarchy-install` + TUI + consume). It is **not** the 7.2 / `apple-drm` display install.
@@ -50,10 +53,10 @@ Copy the whole `release/omarchy-mac-iso-usb/` folder **and** `scripts/macos/plac
 | `vmlinuz-linux-asahi` | 7.1.6 kernel |
 | `initramfs-omarchy-usb.img` | live overlay initrd |
 | `initramfs-linux-asahi.img` | installed-root initrd (LUKS) |
-| `BOOTAA64.EFI` | live GRUB |
-| `grub-nvme-installer.cfg` | NVMe live menu (fallback: `grub.cfg`) |
+| `BOOTAA64-NVME.EFI` | NVMe-only live GRUB |
+| `grub-nvme-installer.cfg` | NVMe live menu |
 
-`initramfs-linux-asahi-plain.img` is optional. Without it, an unencrypted install may print a spurious LUKS line in the initrd; encrypt anyway for this test.
+`initramfs-linux-asahi-plain.img` is required. It has no `encrypt` hook and is selected for an unencrypted root; the placer refuses an incomplete file set before changing the GPT.
 
 7.2 salvage is already on the builder (`vmlinuz-wip72`, `modules-7.2.2-omarchy-wip72+.tar`, overlay, `boot.bin.dcp`). You will not use it in this test.
 
@@ -123,7 +126,9 @@ sudo ./place-nvme-installer.sh \
   --confirm
 ```
 
-This **replaces** `EFI/BOOT/BOOTAA64.EFI` with live installer GRUB (m1n1 / vendorfw / asahi hashes must match). Old NVMe GRUB is no longer the default. That is expected.
+This temporarily replaces `EFI/BOOT/BOOTAA64.EFI` with NVMe-only live GRUB (m1n1 / vendorfw / asahi hashes must match). If an installed GRUB owned that file, the final install restores its saved executable and piggybacks the new root through `custom.cfg`.
+
+The current placer refuses the old layout identified by `/omarchy-usb-live` or an NVMe-live title in `grub.cfg`. Do not remove the marker by itself: first restore and boot the intended installed EFI/GRUB files from a known ESP backup, because the old placer replaced those files too.
 
 Stop if the script says `m1n1/vendorfw/asahi changed`.
 
@@ -195,7 +200,7 @@ It must refuse if `/omarchy-mac-overlay-write` exists (still on the live overlay
 
 | Symptom | What to do |
 |---------|------------|
-| Still “Omarchy Linux / Advanced options” | Live `BOOTAA64.EFI` did not win. From macOS: mount the ESP (`mount_msdos` / `diskutil`), check for `omarchy-usb-live` and `initramfs-omarchy-usb.img`. |
+| Still “Omarchy Linux / Advanced options” | NVMe-live `BOOTAA64.EFI` did not win. From macOS: mount the ESP (`mount_msdos` / `diskutil`), check for `omarchy-nvme-live` and `initramfs-omarchy-nvme-live.img`. |
 | TUI says no free GPT space | The hole is already a partition, or you booted USB-style skip. `lsblk` / `parted /dev/nvme0n1 unit MiB print free`. Do not `mkpart` by hand over APFS. |
 | Display is simpledrm / 2560×1600 | **Pass** for 7.1.6. |
 | macOS missing | ESP/`m1n1` damage or wrong `dd`. Do not keep writing. |

@@ -1,0 +1,237 @@
+#!/bin/bash
+# Read-only board dump for DCP/USB bring-up. Testers: sudo omarchy-mac-dump-board
+# then send the tarball. Does not write boot.bin, firmware trees, or partition tables.
+set -euo pipefail
+
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+log() { printf '==> %s\n' "$*"; }
+
+raw_private=0
+case ${1:-} in
+  --raw-private) raw_private=1 ;;
+  -h|--help)
+    printf 'usage: sudo omarchy-mac-dump-board [--raw-private]\n'
+    printf 'default: sanitized metadata; --raw-private adds identifying DT/boot data\n'
+    exit 0
+    ;;
+  "") ;;
+  *) fail "unknown argument: $1" ;;
+esac
+
+[[ $(id -u) -eq 0 ]] || fail "run as root (sudo omarchy-mac-dump-board)"
+
+dt=/sys/firmware/devicetree/base
+[[ -d $dt ]] || fail "no device-tree (not Apple Silicon / not booted via m1n1?)"
+
+compat=$(tr '\0' ' ' <"$dt/compatible" 2>/dev/null || true)
+model=$(tr '\0' '\n' <"$dt/model" 2>/dev/null | head -1 || true)
+board=$(printf '%s' "$compat" | tr ' ' '\n' | grep -m1 '^apple,j' || printf 'unknown')
+board=${board#apple,}
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+work=$(mktemp -d /tmp/omarchy-mac-board.XXXXXX)
+dest=$work/${board}-${stamp}
+mkdir -p "$dest/dt" "$dest/drm" "$dest/m1n1"
+status_file=$dest/STATUS.tsv
+printf 'item\tstatus\n' >"$status_file"
+trap 'rm -rf "$work"' EXIT
+
+save() {
+  local file=$1 rc
+  shift
+  if "$@" >"$dest/$file" 2>&1; then
+    printf '%s\tok\n' "$file" >>"$status_file"
+  else
+    rc=$?
+    printf '%s\tfailed:%s\n' "$file" "$rc" >>"$status_file"
+  fi
+}
+
+sanitize_text_file() {
+  local file=$1 tmp=$1.sanitized
+  [[ -f $file ]] || return 0
+  sed -E \
+    -e 's/([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}/<redacted-mac>/g' \
+    -e 's/((PART)?UUID=)[^ ,]+/\1<redacted>/g' \
+    -e 's/((serial|uuid)[-_ ]?(number)?[=:][[:space:]]*)[^ ,]+/\1<redacted>/Ig' \
+    "$file" >"$tmp"
+  mv "$tmp" "$file"
+}
+
+log "board $board ($model)"
+{
+  printf 'board: %s\n' "$board"
+  printf 'model: %s\n' "$model"
+  printf 'compatible: %s\n' "$compat"
+  printf 'kernel: %s\n' "$(uname -srvm)"
+  printf 'collected: %s\n' "$stamp"
+  printf 'script: omarchy-mac-dump-board (read-only)\n'
+  if (( raw_private == 1 )); then
+    printf 'privacy: PRIVATE — raw device-tree and boot data included\n'
+  else
+    printf 'privacy: sanitized — no raw device-tree or boot.bin included\n'
+  fi
+} >"$dest/REPORT.txt"
+
+save uname.txt uname -srvm
+save cpuinfo.txt sed -n '1,40p' /proc/cpuinfo
+save compatible.txt printf '%s\n' "$compat"
+save lsmod-apple.txt bash -c 'lsmod | grep -iE "apple|drm|sn201|tps6598|dwc3|xhci|typec" || true'
+save lsblk.txt lsblk -o NAME,SIZE,FSTYPE,PARTTYPE,PARTLABEL
+save iomem.txt cat /proc/iomem
+save dmesg-display.txt bash -c 'dmesg | grep -iE "drm|dcp|simplefb|simple-framebuffer|appledrm|notch" || true'
+save dmesg-usb.txt bash -c 'dmesg | grep -iE "usb|dwc3|xhci|typec|sn201|tps6598|cd321" || true'
+save drm-class.txt bash -c 'ls -l /sys/class/drm; echo; for n in /sys/class/drm/card*-*; do [[ -e $n/status ]] || continue; printf "%s status=%s modes=%s\n" "$n" "$(cat "$n/status" 2>/dev/null)" "$(tr "\n" "," <"$n/modes" 2>/dev/null)"; done'
+save fb.txt bash -c 'cat /sys/class/graphics/fb0/virtual_size 2>/dev/null; echo; cat /sys/class/graphics/fb0/name 2>/dev/null; echo; cat /sys/module/appledrm/parameters/show_notch 2>/dev/null || true'
+save typec.txt bash -c 'ls /sys/class/typec 2>/dev/null; ls /sys/bus/usb/devices 2>/dev/null'
+
+for file in cpuinfo.txt dmesg-display.txt dmesg-usb.txt iomem.txt; do
+  sanitize_text_file "$dest/$file"
+done
+
+# Raw DT properties can contain serial numbers, chip IDs, MAC addresses,
+# UUIDs, and boot secrets. Compatible strings and node paths are sufficient
+# for the default board census.
+find "$dt" -name compatible -print0 2>/dev/null \
+  | sort -z \
+  | while IFS= read -r -d '' f; do
+      printf '%s: %s\n' "${f#"$dt"}" "$(tr '\0' ' ' <"$f")"
+    done >"$dest/dt/compatibles.txt" || true
+find "$dt" -type d 2>/dev/null \
+  | sed "s|^$dt||" \
+  | grep -iE 'dcp|display|framebuffer|dart|typec|usb|spmi|panel' \
+  >"$dest/dt/relevant-paths.txt" || true
+printf 'dt/metadata\tok\n' >>"$status_file"
+
+if (( raw_private == 1 )); then
+  mkdir -p "$dest/private"
+  if command -v dtc >/dev/null; then
+    # Use the path verified above. Fedora does not always provide the
+    # /proc/device-tree compatibility symlink.
+    dtc -I fs -O dts -o "$dest/private/running.dts" "$dt" \
+      2>"$dest/private/dtc.warn" || true
+    dtc -I fs -O dtb -o "$dest/private/running.dtb" "$dt" 2>/dev/null || true
+  else
+    printf 'dtc not installed; raw running DT was not serialized\n' \
+      >"$dest/private/dtc-missing.txt"
+  fi
+fi
+
+boot_bin=""
+for cand in /boot/m1n1/boot.bin /boot/efi/m1n1/boot.bin /efi/m1n1/boot.bin; do
+  [[ -f $cand ]] && boot_bin=$cand && break
+done
+esp_mnt=""
+if [[ -z $boot_bin ]]; then
+  esp_dev=$(lsblk -ln -o NAME,FSTYPE,LABEL | awk '$2=="vfat" && $3 ~ /EFI/{print $1; exit}')
+  if [[ -n $esp_dev ]]; then
+    esp_mnt=$(mktemp -d)
+    if mount -o ro "/dev/$esp_dev" "$esp_mnt" 2>/dev/null; then
+      [[ -f $esp_mnt/m1n1/boot.bin ]] && boot_bin=$esp_mnt/m1n1/boot.bin
+    else
+      rmdir "$esp_mnt" || true
+      esp_mnt=""
+    fi
+  fi
+fi
+
+if [[ -n $boot_bin ]]; then
+  log "indexing m1n1/boot.bin (read-only)"
+  if (( raw_private == 1 )); then
+    cp -a "$boot_bin" "$dest/private/boot.bin"
+    sha256sum "$boot_bin" | awk '{print $1 "  boot.bin"}' \
+      >"$dest/private/boot.bin.sha256"
+  fi
+  python3 - "$boot_bin" "$dest/m1n1" "$dest/private" "$raw_private" <<'PY'
+import os, struct, sys
+magic = b"\xd0\x0d\xfe\xed"
+boot_path, out_dir, private_dir, raw = sys.argv[1:]
+include_raw = raw == "1"
+boot = open(boot_path, "rb").read()
+off, n = 0, 0
+index = []
+while True:
+    off = boot.find(magic, off)
+    if off < 0:
+        break
+    if off + 8 > len(boot):
+        break
+    total = struct.unpack(">I", boot[off + 4 : off + 8])[0]
+    if 0x1000 <= total <= 0x100000 and off + total <= len(boot):
+        blob = boot[off : off + total]
+        n += 1
+        if include_raw:
+            path = os.path.join(private_dir, f"slot-{n:02d}.dtb")
+            open(path, "wb").write(blob)
+        compat = []
+        i = 0
+        while True:
+            j = blob.find(b"apple,", i)
+            if j < 0:
+                break
+            end = blob.find(b"\0", j)
+            if end < 0:
+                break
+            compat.append(blob[j:end].decode("ascii", "replace"))
+            i = end + 1
+        has_dcp = b"apple,dcp" in blob or b"-dcp" in blob
+        index.append(
+            f"slot-{n:02d} off=0x{off:x} len={total} dcp={int(has_dcp)} {' '.join(compat[:8])}"
+        )
+        off += total
+    else:
+        off += 4
+open(os.path.join(out_dir, "slots.txt"), "w").write("\n".join(index) + "\n")
+print(f"extracted {n} FDT slots")
+PY
+  if (( raw_private == 1 )) && command -v dtc >/dev/null; then
+    for dtb in "$dest/private"/slot-*.dtb; do
+      [[ -f $dtb ]] || continue
+      dtc -I dtb -O dts -o "${dtb%.dtb}.dts" "$dtb" 2>/dev/null || true
+    done
+  fi
+else
+  printf 'm1n1/boot.bin not found (ESP not mounted?)\n' >"$dest/m1n1/missing.txt"
+fi
+
+if [[ -n $esp_mnt ]]; then
+  umount "$esp_mnt" || true
+  rmdir "$esp_mnt" || true
+fi
+
+{
+  printf '\n--- overlay hint ---\n'
+  if grep -aR -q -E 'apple,.*dcp|apple,display-subsystem' "$dt" 2>/dev/null; then
+    printf 'Running DT already has DCP/display-subsystem. An overlay may not be needed.\n'
+  else
+    printf 'Running DT has no DCP nodes. simpledrm is the expected baseline.\n'
+    printf 'A DCP overlay needs a private ADT capture if a developer requests it.\n'
+  fi
+} >>"$dest/REPORT.txt"
+
+tarball=""
+suffix=""
+if (( raw_private == 1 )); then
+  suffix=-private
+  printf '%s\n' \
+    'PRIVATE: raw DT and m1n1 data can contain unique hardware identifiers.' \
+    'Do not attach this archive to a public issue.' \
+    >"$dest/private/README-PRIVATE.txt"
+fi
+if command -v zstd >/dev/null; then
+  tarball=/tmp/omarchy-mac-board-${board}-${stamp}${suffix}.tar.zst
+  tar -C "$work" -cf - "$(basename "$dest")" | zstd -q -o "$tarball"
+else
+  tarball=/tmp/omarchy-mac-board-${board}-${stamp}${suffix}.tar.gz
+  tar -C "$work" -czf "$tarball" "$(basename "$dest")"
+fi
+log "wrote $tarball"
+if (( raw_private == 1 )); then
+  chmod 600 "$tarball"
+  log "PRIVATE bundle: send only through a private channel"
+else
+  chmod a+r "$tarball"
+  log "sanitized bundle: send with the install/usability result"
+fi
+printf '%s\n' "$tarball"
+trap - EXIT
+rm -rf "$work"

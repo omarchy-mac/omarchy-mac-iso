@@ -22,11 +22,14 @@ check() {
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
+export ESP_UUID_DIR=$work/present-uuids
+mkdir -p "$ESP_UUID_DIR"
 
 fake_live=$work/live-esp
 mkdir -p "$fake_live"
 printf 'vmlinuz\n' >"$fake_live/vmlinuz-linux-asahi"
 printf 'initrd\n' >"$fake_live/initramfs-linux-asahi.img"
+printf 'plain-initrd\n' >"$fake_live/initramfs-linux-asahi-plain.img"
 
 # --- own mode: UEFI-only ESP (m1n1 + vendorfw, no GRUB) ---
 own=$work/own-esp
@@ -41,17 +44,44 @@ printf 'legacy-vmlinuz\n' >"$own/vmlinuz-omarchy-usb-root"
 printf 'legacy-initrd\n' >"$own/initramfs-omarchy-usb-root.img"
 before=$(esp_protected_hashes "$own")
 
-esp_copy_unique_kernels "$fake_live" "$own"
+own_uuid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+: >"$ESP_UUID_DIR/$own_uuid"
+esp_copy_unique_kernels "$fake_live" "$own" "$own_uuid"
 if command -v grub-mkstandalone >/dev/null; then
-  write_owned_esp_grub "$own" "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" "$embed"
+  write_owned_esp_grub "$own" "$own_uuid" "$embed"
   after=$(esp_protected_hashes "$own")
   check "own mode writes BOOTAA64.EFI" "[[ -f '$own/EFI/BOOT/BOOTAA64.EFI' ]]"
+  # Inspect the real standalone image, not just the builder's argument text.
+  # GRUB's '[' command comes from test.mod; without it conditional includes
+  # silently leave only the owning menu visible.
+  strings "$own/EFI/BOOT/BOOTAA64.EFI" >"$work/grub-strings"
+  check "standalone GRUB packages the module for conditional includes" \
+    "grep -qx 'boot/grub/arm64-efi/test.mod' '$work/grub-strings'"
+  check "new standalone loader passes the compatibility preflight" \
+    "source '$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh'; esp_require_supported_grub '$own'"
+  unsupported=$work/unsupported-esp
+  mkdir -p "$unsupported/EFI/BOOT" "$unsupported/grub"
+  grub-mkstandalone -O arm64-efi --fonts="" --locales="" --themes="" \
+    --install-modules="linux fat ext2 btrfs part_gpt search search_label search_fs_uuid search_fs_file echo normal configfile gzio reboot sleep" \
+    --modules="part_gpt fat search search_fs_file configfile linux echo normal" \
+    -o "$unsupported/EFI/BOOT/BOOTAA64.EFI" "boot/grub/grub.cfg=$embed"
+  unsupported_hash=$(sha256sum "$unsupported/EFI/BOOT/BOOTAA64.EFI")
+  check "old standalone loader fails before destructive installation" \
+    "source '$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh'; ! esp_require_supported_grub '$unsupported'"
+  check "compatibility preflight preserves the old EFI bytes" \
+    "[[ \$(sha256sum '$unsupported/EFI/BOOT/BOOTAA64.EFI') == '$unsupported_hash' ]]"
+  cp "$unsupported/EFI/BOOT/BOOTAA64.EFI" "$unsupported/EFI/BOOT/BOOTAA64.EFI.omarchy-nvme-bak"
+  cp "$own/EFI/BOOT/BOOTAA64.EFI" "$unsupported/EFI/BOOT/BOOTAA64.EFI"
+  : >"$unsupported/omarchy-nvme-live"
+  : >"$unsupported/grub/omarchy-nvme-had-bootloader"
+  check "NVMe preflight checks the saved owner instead of the new live loader" \
+    "source '$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh'; ! esp_require_supported_grub '$unsupported'"
   check "own mode writes omarchy-mac-root marker" "[[ -f '$own/omarchy-mac-root' ]]"
-  check "own mode grub.cfg names the root UUID" "grep -q 'root=UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' '$own/grub/grub.cfg'"
-  check "own mode grub.cfg has a top-level verbose entry" \
-    "grep -q \"menuentry 'Omarchy Mac (verbose)'\" '$own/grub/grub.cfg'"
+  check "own mode managed menu names the root UUID" "grep -q 'root=UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' '$own/grub/omarchy.cfg'"
+  check "own mode managed menu has a top-level verbose entry" \
+    "grep -q '(verbose)' '$own/grub/omarchy.cfg'"
   check "own mode verbose drops quiet splash" \
-    "grep -q 'Omarchy Mac (verbose)' '$own/grub/grub.cfg' && grep -q 'loglevel=7' '$own/grub/grub.cfg'"
+    "grep -q '(verbose)' '$own/grub/omarchy.cfg' && grep -q 'loglevel=7' '$own/grub/omarchy.cfg'"
   check "own mode does not hide verbose under a submenu" \
     "! grep -q submenu '$own/grub/grub.cfg'"
   check "own mode kept pancake grub.cfg as omarchy-bak" \
@@ -60,81 +90,323 @@ if command -v grub-mkstandalone >/dev/null; then
     "grep -qx efi-grub '$own/EFI/BOOT/grub.cfg.omarchy-bak'"
   check "own mode does not bak a missing BOOTAA64.EFI" \
     "[[ ! -e '$own/EFI/BOOT/BOOTAA64.EFI.omarchy-bak' ]]"
-  check "own mode copies vmlinuz under EFI/omarchy" "[[ -f '$own/EFI/omarchy/vmlinuz' ]]"
-  check "own mode copies initrd under EFI/omarchy" "[[ -f '$own/EFI/omarchy/initramfs.img' ]]"
+  check "own mode copies a root-private vmlinuz" \
+    "[[ -f '$own/EFI/omarchy/$own_uuid/vmlinuz' ]]"
+  check "own mode copies a root-private initrd" \
+    "[[ -f '$own/EFI/omarchy/$own_uuid/initramfs.img' ]]"
+  check "own mode menu uses the root-private kernel" \
+    "grep -q '/EFI/omarchy/$own_uuid/vmlinuz' '$own/grub/omarchy.cfg'"
+  check "own mode grub.cfg reaches the managed menu through custom.cfg" \
+    "grep -qF 'source /grub/custom.cfg' '$own/grub/grub.cfg' && ! grep -qF 'source /grub/omarchy.cfg' '$own/grub/grub.cfg'"
+  check "own mode custom.cfg persists the managed menu through grub-mkconfig" \
+    "grep -qF 'source /grub/omarchy.cfg' '$own/grub/custom.cfg'"
   check "own mode removes legacy vmlinuz-omarchy-usb-root" \
     "[[ ! -e '$own/vmlinuz-omarchy-usb-root' ]]"
   check "own mode removes legacy initramfs-omarchy-usb-root.img" \
     "[[ ! -e '$own/initramfs-omarchy-usb-root.img' ]]"
-  check "own mode does not bak installer kernels under EFI/omarchy" \
-    "[[ ! -e '$own/EFI/omarchy/vmlinuz.omarchy-bak' ]]"
+  check "own mode does not create a shared installed kernel" \
+    "[[ ! -e '$own/EFI/omarchy/vmlinuz' ]]"
   check "own mode leaves m1n1/vendorfw/asahi hashes unchanged" "[[ '$before' == '$after' ]]"
   check "own mode does not format away m1n1/boot.bin" "[[ -f '$own/m1n1/boot.bin' ]]"
+  own_second_uuid=bbbbbbbb-cccc-dddd-eeee-ffffffffffff
+  printf 'own-second-kernel\n' >"$fake_live/vmlinuz-linux-asahi"
+  esp_copy_unique_kernels "$fake_live" "$own" "$own_second_uuid"
+  write_owned_esp_grub "$own" "$own_second_uuid" "$embed"
+  check "NVMe own mode retains two root entries" \
+    "grep -q 'root=UUID=$own_uuid' '$own/grub/omarchy.cfg' && grep -q 'root=UUID=$own_second_uuid' '$own/grub/omarchy.cfg'"
+  check "NVMe own mode preserves the first root as default" \
+    "grep -q \"set default='Omarchy Mac (root $own_uuid)'\" '$own/grub/omarchy.cfg'"
+  check "NVMe own mode keeps separate root kernels" \
+    "grep -qx vmlinuz '$own/EFI/omarchy/$own_uuid/vmlinuz' && grep -qx own-second-kernel '$own/EFI/omarchy/$own_second_uuid/vmlinuz'"
+  write_piggyback_esp_grub "$own" "$own_second_uuid"
+  check "own followed by piggyback sources custom.cfg once" \
+    "[[ \$(grep -Ec '^[[:space:]]*source /grub/custom[.]cfg' '$own/grub/grub.cfg') -eq 1 ]]"
+  check "own followed by piggyback reaches omarchy.cfg exactly once" \
+    "! grep -qF 'source /grub/omarchy.cfg' '$own/grub/grub.cfg' && [[ \$(grep -Ec '^[[:space:]]*source /grub/omarchy[.]cfg' '$own/grub/custom.cfg') -eq 1 ]]"
+
+  legacy=$work/legacy-own-esp
+  legacy_new_uuid=cccccccc-dddd-eeee-ffff-000000000000
+  mkdir -p "$legacy/EFI/BOOT" "$legacy/grub/omarchy-roots" "$legacy/m1n1"
+  printf 'stage2\n' >"$legacy/m1n1/boot.bin"
+  printf 'omarchy-mac-kernel\n' >"$legacy/vmlinuz-linux-asahi"
+  printf 'omarchy-mac-initrd\n' >"$legacy/initramfs-linux-asahi.img"
+  printf '%s\n' \
+    'set default=0' \
+    "menuentry 'Omarchy GNU/Linux' {" \
+    '  linux /vmlinuz-linux-asahi root=UUID=legacy-root rw quiet splash' \
+    '  initrd /initramfs-linux-asahi.img' \
+    '}' >"$legacy/grub/omarchy-roots/00-preexisting-grub.cfg"
+  esp_copy_unique_kernels "$fake_live" "$legacy" "$legacy_new_uuid"
+  write_owned_esp_grub "$legacy" "$legacy_new_uuid" "$embed"
+  check "owned mode ignores a full grub.cfg disguised as a fragment" \
+    "! grep -q 'root=UUID=legacy-root' '$legacy/grub/omarchy.cfg'"
+  check "ignored full grub.cfg cannot override the managed default" \
+    "grep -q \"set default='Omarchy Mac (root $legacy_new_uuid)'\" '$legacy/grub/omarchy.cfg'"
+  check "pre-existing omarchy-mac kernel remains untouched" \
+    "grep -qx omarchy-mac-kernel '$legacy/vmlinuz-linux-asahi'"
+  check "pre-existing omarchy-mac initrd remains untouched" \
+    "grep -qx omarchy-mac-initrd '$legacy/initramfs-linux-asahi.img'"
 else
   echo "skip - grub-mkstandalone not installed (own-mode ESP write)"
 fi
 check "embed searches /omarchy-mac-root" "grep -q 'search --no-floppy --file /omarchy-mac-root' '$embed'"
 check "embed does not search live USB marker" "! grep -q 'search.*omarchy-usb-live' '$embed'"
 
+# --- NVMe live ESP source uses private names, not omarchy-mac /boot names ---
+nvme_live=$work/nvme-live-esp
+nvme_target=$work/nvme-target-esp
+nvme_uuid=dddddddd-eeee-ffff-0000-111111111111
+mkdir -p "$nvme_live" "$nvme_target"
+printf 'nvme-live-kernel\n' >"$nvme_live/vmlinuz-omarchy-nvme-live"
+printf 'nvme-encrypted-initrd\n' >"$nvme_live/initramfs-omarchy-nvme-install.img"
+printf 'nvme-plain-initrd\n' >"$nvme_live/initramfs-omarchy-nvme-install-plain.img"
+printf 'existing-kernel\n' >"$nvme_live/vmlinuz-linux-asahi"
+printf 'existing-initrd\n' >"$nvme_live/initramfs-linux-asahi.img"
+esp_copy_unique_kernels "$nvme_live" "$nvme_target" "$nvme_uuid" "" 1
+check "NVMe source prefers its private kernel" \
+  "grep -qx nvme-live-kernel '$nvme_target/EFI/omarchy/$nvme_uuid/vmlinuz'"
+check "NVMe unencrypted source prefers its private plain initrd" \
+  "grep -qx nvme-plain-initrd '$nvme_target/EFI/omarchy/$nvme_uuid/initramfs.img'"
+missing_nvme=$work/missing-nvme-private
+mkdir -p "$missing_nvme"
+printf 'foreign-kernel\n' >"$missing_nvme/vmlinuz-linux-asahi"
+printf 'foreign-initrd\n' >"$missing_nvme/initramfs-linux-asahi.img"
+check "strict same-ESP NVMe source refuses standard omarchy-mac files" \
+  "source '$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh'; ! esp_copy_unique_kernels '$missing_nvme' '$nvme_target' 'eeeeeeee-ffff-0000-1111-222222222222' '' 1"
+check "same-ESP source without an NVMe marker is rejected" \
+  "source '$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh'; ! esp_boot_source_mode '$missing_nvme' '$missing_nvme'"
+: >"$nvme_live/omarchy-nvme-live"
+check "same-ESP source with the NVMe marker selects strict NVMe mode" \
+  "source '$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh'; [[ \$(esp_boot_source_mode '$nvme_live' '$nvme_live') == nvme ]]"
+check "a separate USB source selects external mode" \
+  "source '$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh'; [[ \$(esp_boot_source_mode '$fake_live' '$nvme_target') == external ]]"
+cleanup_esp=$work/cleanup-esp
+mkdir -p "$cleanup_esp/grub"
+printf 'pending\n' >"$cleanup_esp/vmlinuz-omarchy-nvme-live"
+: >"$cleanup_esp/omarchy-nvme-live"
+esp_cleanup_nvme_live "$cleanup_esp" external
+check "external USB cleanup preserves a pending NVMe placement" \
+  "[[ -f '$cleanup_esp/vmlinuz-omarchy-nvme-live' && -f '$cleanup_esp/omarchy-nvme-live' ]]"
+esp_cleanup_nvme_live "$cleanup_esp" nvme
+check "consumed NVMe cleanup removes its private placement files" \
+  "[[ ! -e '$cleanup_esp/vmlinuz-omarchy-nvme-live' && ! -e '$cleanup_esp/omarchy-nvme-live' ]]"
+tight=$work/tight-nvme-esp
+mkdir -p "$tight"
+printf 'live-initrd\n' >"$tight/initramfs-omarchy-nvme-live.img"
+printf 'plain-initrd-xxxxxxxx\n' >"$tight/initramfs-omarchy-nvme-install-plain.img"
+printf 'luks-initrd\n' >"$tight/initramfs-omarchy-nvme-install.img"
+check "LUKS NVMe copy may drop the live initrd and the unused plain initrd" \
+  "source '$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh'; out=\$(esp_nvme_unused_before_copy luks-uuid); grep -qx initramfs-omarchy-nvme-live.img <<<"\$out" && grep -qx initramfs-omarchy-nvme-install-plain.img <<<"\$out" && ! grep -q initramfs-omarchy-nvme-install.img <<<"\$out""
+check "unencrypted NVMe copy keeps the plain initrd as its source" \
+  "source '$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh'; out=\$(esp_nvme_unused_before_copy); grep -qx initramfs-omarchy-nvme-install.img <<<"\$out" && ! grep -q initramfs-omarchy-nvme-install-plain.img <<<"\$out""
+esp_nvme_drop_unused_before_copy "$tight" luks-uuid
+check "dropping unused NVMe files keeps the LUKS install initrd" \
+  "[[ ! -e '$tight/initramfs-omarchy-nvme-live.img' && ! -e '$tight/initramfs-omarchy-nvme-install-plain.img' && -f '$tight/initramfs-omarchy-nvme-install.img' ]]"
+mkdir -p "$work/uefi-only/grub"
+check "UEFI-only ESP without grub.cfg cannot piggyback after NVMe restore" \
+  "source '$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh'; ! esp_nvme_restore_can_piggyback '$work/uefi-only'"
+mkdir -p "$work/nvme-live-grub/grub" "$work/owner-grub/grub"
+printf '%s\n' "echo 'OMARCHY NVMe installer GRUB'" \
+  >"$work/nvme-live-grub/grub/grub.cfg"
+printf '%s\n' "menuentry 'Existing omarchy-mac root' {}" \
+  >"$work/owner-grub/grub/grub.cfg"
+check "NVMe-live grub.cfg cannot piggyback after restore" \
+  "source '$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh'; ! esp_nvme_restore_can_piggyback '$work/nvme-live-grub'"
+check "an owning grub-mkconfig config can piggyback after NVMe restore" \
+  "source '$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh'; esp_nvme_restore_can_piggyback '$work/owner-grub'"
+notice_root=$work/notice-root
+mkdir -p "$notice_root/etc"
+write_shared_esp_notice "$notice_root" A1B2-C3D4 own
+check "own mode does not claim to share its ESP with another owner" \
+  "[[ ! -e '$notice_root/etc/omarchy-mac-iso-shared-esp' ]]"
+write_shared_esp_notice "$notice_root" A1B2-C3D4 piggyback
+check "piggyback mode records the shared-ESP bootloader warning" \
+  "grep -q 'Do not run omarchy-system-boot-to-esp' '$notice_root/etc/omarchy-mac-iso-shared-esp'"
+
+# --- NVMe placement over a real grub-mkconfig owner restores and piggybacks ---
+mkconfig_esp=$work/mkconfig-owner-esp
+mkconfig_uuid=eeeeeeee-ffff-0000-1111-333333333333
+mkdir -p "$mkconfig_esp/EFI/BOOT" "$mkconfig_esp/grub"
+printf 'temporary-nvme-efi\n' >"$mkconfig_esp/EFI/BOOT/BOOTAA64.EFI"
+printf 'original-omarchy-mac-efi\n' \
+  >"$mkconfig_esp/EFI/BOOT/BOOTAA64.EFI.omarchy-nvme-bak"
+: >"$mkconfig_esp/grub/omarchy-nvme-had-bootloader"
+cat >"$mkconfig_esp/grub/grub.cfg" <<'EOF'
+if [ -s $prefix/grubenv ]; then
+  load_env
+fi
+set default="${saved_entry}"
+search --no-floppy --fs-uuid --set=root A1B2-C3D4
+menuentry 'Existing omarchy-mac root' {
+  linux /vmlinuz-linux-asahi root=UUID=existing-root rw quiet splash
+  initrd /initramfs-linux-asahi.img
+}
+submenu 'Advanced options for existing root' {
+  menuentry 'Existing fallback' {
+    linux /vmlinuz-linux-asahi root=UUID=existing-root rw
+    initrd /initramfs-linux-asahi-fallback.img
+  }
+}
+if [ -f ${config_directory}/custom.cfg ]; then
+  source ${config_directory}/custom.cfg
+fi
+EOF
+printf "menuentry 'User recovery entry' {}\n" >"$mkconfig_esp/grub/custom.cfg"
+printf '# source /grub/omarchy.cfg is only a comment\n' \
+  >>"$mkconfig_esp/grub/custom.cfg"
+esp_restore_nvme_preinstall_bootloader "$mkconfig_esp"
+esp_copy_unique_kernels "$fake_live" "$mkconfig_esp" "$mkconfig_uuid"
+write_piggyback_esp_grub "$mkconfig_esp" "$mkconfig_uuid"
+check "NVMe restores the original omarchy-mac EFI executable" \
+  "grep -qx original-omarchy-mac-efi '$mkconfig_esp/EFI/BOOT/BOOTAA64.EFI'"
+check "piggyback leaves grub-mkconfig saved-default behavior in its owner file" \
+  "grep -q 'saved_entry' '$mkconfig_esp/grub/grub.cfg'"
+check "piggyback does not inline grub-mkconfig into the managed menu" \
+  "! grep -qE 'saved_entry|load_env|Existing omarchy-mac root' '$mkconfig_esp/grub/omarchy.cfg'"
+check "piggyback preserves a pre-existing custom menu" \
+  "grep -q 'User recovery entry' '$mkconfig_esp/grub/custom.cfg'"
+check "piggyback does not back up an untouched owning grub.cfg" \
+  "[[ ! -e '$mkconfig_esp/grub/grub.cfg.omarchy-bak' ]]"
+check "custom.cfg sources the managed menu exactly once" \
+  "[[ \$(grep -Ec '^[[:space:]]*source /grub/omarchy[.]cfg' '$mkconfig_esp/grub/custom.cfg') -eq 1 ]]"
+check "managed menu contains the new UUID root" \
+  "grep -q 'root=UUID=$mkconfig_uuid' '$mkconfig_esp/grub/omarchy.cfg'"
+if command -v grub-script-check >/dev/null; then
+  check "realistic owning grub.cfg remains valid GRUB syntax" \
+    "grub-script-check '$mkconfig_esp/grub/grub.cfg'"
+  check "managed UUID menu is valid GRUB syntax" \
+    "grub-script-check '$mkconfig_esp/grub/omarchy.cfg'"
+fi
+
 # --- piggyback: existing GRUB must not be replaced ---
 pig=$work/pig-esp
+printf 'vmlinuz\n' >"$fake_live/vmlinuz-linux-asahi"
+printf 'initrd\n' >"$fake_live/initramfs-linux-asahi.img"
 mkdir -p "$pig/EFI/BOOT" "$pig/grub" "$pig/m1n1"
 printf 'EXISTING-GRUB\n' >"$pig/EFI/BOOT/BOOTAA64.EFI"
 printf 'menuentry existing {}\n' >"$pig/grub/grub.cfg"
-printf 'old-custom\n' >"$pig/grub/custom.cfg"
+printf '%s\n' \
+  "menuentry 'Legacy ISO root' {" \
+  '  linux /EFI/omarchy/vmlinuz root=UUID=legacy-iso-root rw quiet splash' \
+  '  initrd /EFI/omarchy/initramfs.img' \
+  '}' >"$pig/grub/custom.cfg"
 printf 'stage2\n' >"$pig/m1n1/boot.bin"
 printf 'EXISTING-GRUB\n' >"$work/boot.aa64.expected"
 before_pig=$(esp_protected_hashes "$pig")
-esp_copy_unique_kernels "$fake_live" "$pig"
-write_piggyback_esp_grub "$pig" "11111111-2222-3333-4444-555555555555"
+first_uuid=11111111-2222-3333-4444-555555555555
+second_uuid=22222222-3333-4444-5555-666666666666
+: >"$ESP_UUID_DIR/$first_uuid"
+: >"$ESP_UUID_DIR/bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+esp_copy_unique_kernels "$fake_live" "$pig" "$first_uuid"
+write_piggyback_esp_grub "$pig" "$first_uuid"
 after_pig=$(esp_protected_hashes "$pig")
 check "piggyback leaves BOOTAA64.EFI bytes unchanged" \
   "cmp -s '$pig/EFI/BOOT/BOOTAA64.EFI' '$work/boot.aa64.expected'"
 check "piggyback writes custom.cfg" "[[ -f '$pig/grub/custom.cfg' ]]"
 check "piggyback kept previous custom.cfg as omarchy-bak" \
-  "grep -qx old-custom '$pig/grub/custom.cfg.omarchy-bak'"
+  "grep -q 'Legacy ISO root' '$pig/grub/custom.cfg.omarchy-bak'"
+check "piggyback preserves legacy shared-kernel custom entries" \
+  "grep -q 'Legacy ISO root' '$pig/grub/custom.cfg'"
 check "piggyback kept grub.cfg as omarchy-bak" \
   "grep -q 'menuentry existing' '$pig/grub/grub.cfg.omarchy-bak'"
 esp_backup_existing "$pig" grub/custom.cfg
 check "second backup does not clobber the first omarchy-bak" \
-  "grep -qx old-custom '$pig/grub/custom.cfg.omarchy-bak'"
+  "grep -q 'Legacy ISO root' '$pig/grub/custom.cfg.omarchy-bak'"
 check "second backup writes a timestamped copy" \
   "compgen -G '$pig/grub/custom.cfg.omarchy-bak.*' >/dev/null"
-check "piggyback custom.cfg loads EFI/omarchy/vmlinuz" \
-  "grep -q '/EFI/omarchy/vmlinuz' '$pig/grub/custom.cfg'"
-check "piggyback custom.cfg names the new UUID" \
-  "grep -q 'root=UUID=11111111-2222-3333-4444-555555555555' '$pig/grub/custom.cfg'"
-check "piggyback custom.cfg boots the new root by default" \
-  "grep -q \"set default='Omarchy Mac (new root 11111111-2222-3333-4444-555555555555)'\" '$pig/grub/custom.cfg'"
-check "piggyback custom.cfg has a top-level verbose entry" \
-  "grep -q '(verbose)' '$pig/grub/custom.cfg'"
+check "piggyback managed menu loads a root-private kernel" \
+  "grep -q '/EFI/omarchy/$first_uuid/vmlinuz' '$pig/grub/omarchy.cfg'"
+check "piggyback managed menu names the new UUID" \
+  "grep -q 'root=UUID=11111111-2222-3333-4444-555555555555' '$pig/grub/omarchy.cfg'"
+check "first piggyback root does not override its owner's default" \
+  "! grep -q 'set default=' '$pig/grub/omarchy.cfg'"
+check "piggyback managed menu has a top-level verbose entry" \
+  "grep -q '(verbose)' '$pig/grub/omarchy.cfg'"
 check "piggyback verbose drops quiet splash" \
-  "grep -q '(verbose)' '$pig/grub/custom.cfg' && grep -q 'loglevel=7' '$pig/grub/custom.cfg'"
+  "grep -q '(verbose)' '$pig/grub/omarchy.cfg' && grep -q 'loglevel=7' '$pig/grub/omarchy.cfg'"
 check "piggyback does not hide verbose under a submenu" \
   "! grep -q submenu '$pig/grub/custom.cfg'"
-check "piggyback custom.cfg shows the menu long enough to pick" \
-  "grep -q 'set timeout=8' '$pig/grub/custom.cfg'"
+check "first piggyback root leaves the owner's timeout untouched" \
+  "! grep -q 'set timeout=' '$pig/grub/omarchy.cfg'"
 check "piggyback without LUKS has no cryptdevice" \
   "! grep -q cryptdevice '$pig/grub/custom.cfg'"
+printf 'vmlinuz-second\n' >"$fake_live/vmlinuz-linux-asahi"
+printf 'initrd-second\n' >"$fake_live/initramfs-linux-asahi.img"
+printf '%s\n' "$first_uuid" >"$pig/grub/omarchy-default-root"
+esp_copy_unique_kernels "$fake_live" "$pig" "$second_uuid" "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+write_piggyback_esp_grub "$pig" "$second_uuid" \
+  "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+check "a second root keeps the first menu entry" \
+  "grep -q 'root=UUID=$first_uuid' '$pig/grub/omarchy.cfg'"
+check "a second root adds its own menu entry" \
+  "grep -q 'root=UUID=$second_uuid' '$pig/grub/omarchy.cfg'"
+check "two roots keep separate kernels" \
+  "grep -qx vmlinuz '$pig/EFI/omarchy/$first_uuid/vmlinuz' && grep -qx vmlinuz-second '$pig/EFI/omarchy/$second_uuid/vmlinuz'"
+check "two roots keep their own encryption-specific initrds" \
+  "grep -qx plain-initrd '$pig/EFI/omarchy/$first_uuid/initramfs.img' && grep -qx initrd-second '$pig/EFI/omarchy/$second_uuid/initramfs.img'"
+check "a second root preserves the managed default" \
+  "grep -q \"set default='Omarchy Mac (root $first_uuid)'\" '$pig/grub/omarchy.cfg'"
+check "an ISO-managed default keeps a selectable timeout" \
+  "grep -q 'set timeout=8' '$pig/grub/omarchy.cfg'"
 write_piggyback_esp_grub "$pig" "11111111-2222-3333-4444-555555555555" \
   "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 check "piggyback with LUKS adds cryptdevice" \
-  "grep -q 'cryptdevice=UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:root:allow-discards' '$pig/grub/custom.cfg'"
+  "grep -q 'cryptdevice=UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:root:allow-discards' '$pig/grub/omarchy.cfg'"
 check "piggyback sources custom.cfg from grub.cfg" "grep -q custom.cfg '$pig/grub/grub.cfg'"
 printf '%s\n' \
   "set default=0" \
   "menuentry 'Omarchy Mac' {" \
-  "  linux /EFI/omarchy/vmlinuz root=UUID=old-root rw cryptdevice=UUID=old-luks:root:allow-discards loglevel=3 quiet splash" \
+  "  linux /EFI/omarchy/vmlinuz root=UUID=99999999-8888-7777-6666-555555555555 rw cryptdevice=UUID=old-luks:root:allow-discards loglevel=3 quiet splash" \
   "  initrd /EFI/omarchy/initramfs.img" \
   "}" \
   'if [ -f /grub/custom.cfg ]; then source /grub/custom.cfg; fi' \
   >"$pig/grub/grub.cfg"
 write_piggyback_esp_grub "$pig" "11111111-2222-3333-4444-555555555555" \
-  "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" \
+  "99999999-8888-7777-6666-555555555555"
 check "piggyback rewrites a leftover Omarchy Mac linux line" \
   "grep -q 'root=UUID=11111111-2222-3333-4444-555555555555' '$pig/grub/grub.cfg' && grep -q 'cryptdevice=UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:root:allow-discards' '$pig/grub/grub.cfg'"
 check "piggyback leftover rewrite drops the old root UUID" \
-  "! grep -q old-root '$pig/grub/grub.cfg'"
+  "! grep -q 99999999-8888-7777-6666-555555555555 '$pig/grub/grub.cfg'"
+uuid_dir=$work/fake-by-uuid
+mkdir -p "$uuid_dir"
+stale=$work/stale-shared-esp
+stale_uuid=77777777-8888-9999-aaaa-bbbbbbbbbbbb
+stale_luks=88888888-9999-aaaa-bbbb-cccccccccccc
+mkdir -p "$stale/EFI/BOOT" "$stale/grub"
+printf 'owner-efi\n' >"$stale/EFI/BOOT/BOOTAA64.EFI"
+printf '%s\n' \
+  "set default=0" \
+  "menuentry 'Omarchy Mac' {" \
+  "  linux /EFI/omarchy/vmlinuz root=UUID=dead-root rw cryptdevice=UUID=dead-luks:root:allow-discards loglevel=3 quiet splash" \
+  "  initrd /EFI/omarchy/initramfs.img" \
+  "}" \
+  'if [ -f /grub/custom.cfg ]; then source /grub/custom.cfg; fi' \
+  >"$stale/grub/grub.cfg"
+ESP_UUID_DIR="$uuid_dir" write_piggyback_esp_grub "$stale" "$stale_uuid" \
+  "$stale_luks"
+check "a stale shared-kernel entry is rewritten without stealing another root's default" \
+  "grep -q '/EFI/omarchy/$stale_uuid/vmlinuz' '$stale/grub/grub.cfg' && ! grep -q 'set default=' '$stale/grub/omarchy.cfg'"
+check "a stale shared-kernel rewrite drops the dead UUID" \
+  "! grep -q dead-root '$stale/grub/grub.cfg'"
+live_shared=$work/live-shared-esp
+live_uuid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeee0001
+mkdir -p "$live_shared/EFI/BOOT" "$live_shared/grub" "$uuid_dir"
+: >"$uuid_dir/old-root"
+printf 'owner-efi\n' >"$live_shared/EFI/BOOT/BOOTAA64.EFI"
+printf '%s\n' \
+  "set default=0" \
+  "menuentry 'Omarchy Mac' {" \
+  "  linux /EFI/omarchy/vmlinuz root=UUID=old-root rw loglevel=3 quiet splash" \
+  "  initrd /EFI/omarchy/initramfs.img" \
+  "}" \
+  'if [ -f /grub/custom.cfg ]; then source /grub/custom.cfg; fi' \
+  >"$live_shared/grub/grub.cfg"
+ESP_UUID_DIR="$uuid_dir" write_piggyback_esp_grub "$live_shared" "$live_uuid"
+check "a living shared-kernel entry is left for the other Omarchy root" \
+  "grep -q 'root=UUID=old-root' '$live_shared/grub/grub.cfg'"
+check "replacing a non-default root leaves the managed default untouched" \
+  "grep -q \"set default='Omarchy Mac (root $first_uuid)'\" '$pig/grub/omarchy.cfg'"
 printf '%s\n' \
   "set default=0" \
   "menuentry 'Omarchy Mac' {" \
@@ -143,15 +415,48 @@ printf '%s\n' \
   "}" \
   'if [ -f /grub/custom.cfg ]; then source /grub/custom.cfg; fi' \
   >"$pig/grub/grub.cfg"
-write_piggyback_esp_grub "$pig" "11111111-2222-3333-4444-555555555555" "" 1
-check "free-space piggyback does not steal GRUB default" \
-  "! grep -q \"set default='Omarchy Mac (new root\" '$pig/grub/custom.cfg'"
+: >"$uuid_dir/old-root"
+ESP_UUID_DIR="$uuid_dir" write_piggyback_esp_grub "$pig" \
+  "11111111-2222-3333-4444-555555555555"
+check "free-space piggyback does not steal the managed GRUB default" \
+  "grep -q \"set default='Omarchy Mac (root $first_uuid)'\" '$pig/grub/omarchy.cfg'"
 check "free-space piggyback leaves the original linux line" \
   "grep -q old-root '$pig/grub/grub.cfg'"
+
+replace_default=$work/replace-default-esp
+replacement_uuid=33333333-4444-5555-6666-777777777777
+mkdir -p "$replace_default/EFI/BOOT" "$replace_default/grub/omarchy-roots"
+printf 'owner-efi\n' >"$replace_default/EFI/BOOT/BOOTAA64.EFI"
+printf 'source /grub/custom.cfg\n' >"$replace_default/grub/grub.cfg"
+printf '%s\n' "$first_uuid" >"$replace_default/grub/omarchy-default-root"
+printf "menuentry 'Omarchy Mac (root %s)' {}\n" "$first_uuid" \
+  >"$replace_default/grub/omarchy-roots/$first_uuid.cfg"
+write_piggyback_esp_grub "$replace_default" "$replacement_uuid" "" "$first_uuid"
+check "replacing the managed default transfers it to the new UUID" \
+  "grep -qx '$replacement_uuid' '$replace_default/grub/omarchy-default-root' && grep -q \"set default='Omarchy Mac (root $replacement_uuid)'\" '$replace_default/grub/omarchy.cfg'"
+
+encrypted_default=$work/encrypted-default-esp
+encrypted_old_uuid=44444444-5555-6666-7777-888888888888
+encrypted_new_uuid=55555555-6666-7777-8888-999999999999
+encrypted_old_luks=66666666-7777-8888-9999-aaaaaaaaaaaa
+mkdir -p "$encrypted_default/EFI/BOOT" "$encrypted_default/grub/omarchy-roots"
+printf 'owner-efi\n' >"$encrypted_default/EFI/BOOT/BOOTAA64.EFI"
+printf 'source /grub/custom.cfg\n' >"$encrypted_default/grub/grub.cfg"
+printf '%s\n' "$encrypted_old_uuid" >"$encrypted_default/grub/omarchy-default-root"
+printf 'linux /EFI/omarchy/old/vmlinuz root=UUID=old cryptdevice=UUID=%s:root:allow-discards\n' \
+  "$encrypted_old_luks" >"$encrypted_default/grub/omarchy-roots/$encrypted_old_uuid.cfg"
+write_piggyback_esp_grub "$encrypted_default" "$encrypted_new_uuid" "" "" \
+  "$encrypted_old_luks"
+check "replacing an encrypted managed default matches its old LUKS UUID" \
+  "grep -qx '$encrypted_new_uuid' '$encrypted_default/grub/omarchy-default-root'"
 check "piggyback leaves m1n1 hash unchanged" "[[ '$before_pig' == '$after_pig' ]]"
 check "esp_has_bootloader is true for piggyback ESP" "[[ -f '$pig/EFI/BOOT/BOOTAA64.EFI' ]]"
 check "esp_has_bootloader is false on an empty ESP dir" \
   "[[ ! -f '$work/empty-esp/EFI/BOOT/BOOTAA64.EFI' ]]"
+check "compatibility preflight permits an empty UEFI-only ESP" \
+  "source '$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh'; esp_require_supported_grub '$work/empty-esp'"
+check "compatibility preflight does not classify an unrelated owner as old ISO GRUB" \
+  "source '$repo_root/configs/usb/rootfs/omarchy-mac-esp.sh'; esp_require_supported_grub '$pig'"
 
 p7_pairs='NAME="nvme0n1p7" FSTYPE="crypto_LUKS" LABEL="" PARTLABEL="root"'
 asahi_pairs='NAME="nvme0n1p5" FSTYPE="crypto_LUKS" LABEL="" PARTLABEL=""'
@@ -164,6 +469,8 @@ check "lsblk pairs read crypto_LUKS on the encrypted hole" \
   "source '$esp_sh'; [[ \$(lsblk_pair_field '$p7_pairs' FSTYPE) == crypto_LUKS ]]"
 check "lsblk pairs leave Asahi LUKS unnamed" \
   "source '$esp_sh'; [[ -z \$(lsblk_pair_field '$asahi_pairs' PARTLABEL) ]]"
+check "root enumeration returns success and prints multiple roots" \
+  "source '$esp_sh'; lsblk() { printf '%s\\n' 'NAME=\"nvme0n1\" FSTYPE=\"\" LABEL=\"\" PARTLABEL=\"\"' 'NAME=\"nvme0n1p6\" FSTYPE=\"btrfs\" LABEL=\"OMARCHYROOT\" PARTLABEL=\"root\"' 'NAME=\"nvme0n1p7\" FSTYPE=\"crypto_LUKS\" LABEL=\"OMARCHYROOT\" PARTLABEL=\"root\"'; }; [[ \$(existing_omarchy_roots_on nvme0n1 | wc -l) -eq 2 ]]"
 
 if (( failures > 0 )); then
   echo "${failures} esp-grub test failure(s)"

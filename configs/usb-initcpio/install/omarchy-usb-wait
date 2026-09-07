@@ -2,6 +2,7 @@
 
 build() {
   add_binary /usr/bin/udevadm
+  add_binary /usr/bin/blkid
   add_runscript
   # show_notch/fnmode must be in the initrd. appledrm/hid_apple load
   # there (kms/asahi); a rootfs modprobe.d file is too late.
@@ -15,8 +16,10 @@ build() {
 
 help() {
   cat <<HELPEOF
-Wait for a USB root filesystem (UUID from the kernel cmdline) before
-the filesystems hook mounts it. LABEL=OMARCHYROOT is only used when
-the cmdline has no UUID — that label also exists on NVMe hole installs.
+Wait for the installed root (UUID from the kernel cmdline) before the
+filesystems/encrypt hooks mount it. Walks blkid on NVMe as well as USB:
+udev's by-uuid symlink can lag the asahi ESP mount. LABEL=OMARCHYROOT is
+only used when the cmdline has no UUID — that label also exists on other
+Omarchy roots.
 HELPEOF
 }

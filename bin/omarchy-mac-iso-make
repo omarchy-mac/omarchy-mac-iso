@@ -22,25 +22,31 @@ check_deps() {
 
 usage() {
     cat <<'EOF'
-Usage: omarchy-mac-iso-make [--usb] [--rootfs]
+Usage: omarchy-mac-iso-make [--usb] [--rootfs] [--disk-image]
 
 Default: M0 QEMU artifact (Alpine linux-virt kernel + initramfs) into
 release/omarchy-mac-iso-arm64/. Does not boot a Mac.
 
---usb: native Apple Silicon GPT image (linux-asahi, GRUB ESP, btrfs
-payload) into release/omarchy-mac-iso-usb/. Requires linux-asahi on the host.
-Tiny busybox pid 1, unprivileged.
+--usb: native Apple Silicon files into release/omarchy-mac-iso-usb/
+(payload.img, payload.img.zst, vmlinuz, initrds, USB and NVMe BOOTAA64 EFI
+files). Requires linux-asahi on the host. Tiny busybox pid 1, unprivileged.
+Does not wrap a GPT disk image unless --disk-image is also passed.
 
 --usb --rootfs: pacstrap Arch `base` plus omarchy-base.packages (the
 script-based install set, including sudo) into the payload instead of
 busybox. Needs root. Live session is still tty autologin, not a
 graphical login.
+
+--disk-image: with --usb, also write omarchy-mac-usb.img (GPT ESP +
+payload) for dd onto a USB stick. Off by default — the NVMe placer
+uses payload.img, not the GPT image.
 EOF
 }
 
 main() {
     local mode="qemu"
     local rootfs=0
+    local disk_image=0
     while (( $# > 0 )); do
         case "$1" in
             -h|--help)
@@ -55,6 +61,10 @@ main() {
                 rootfs=1
                 shift
                 ;;
+            --disk-image)
+                disk_image=1
+                shift
+                ;;
             *)
                 fail "unexpected argument: $1"
                 ;;
@@ -63,6 +73,9 @@ main() {
 
     if (( rootfs == 1 )) && [[ $mode != usb ]]; then
         fail "--rootfs requires --usb"
+    fi
+    if (( disk_image == 1 )) && [[ $mode != usb ]]; then
+        fail "--disk-image requires --usb"
     fi
 
     if [[ "${mode}" == "usb" ]]; then
@@ -74,6 +87,11 @@ main() {
             export OMARCHY_USB_ROOTFS=1
         else
             unset OMARCHY_USB_ROOTFS || true
+        fi
+        if (( disk_image == 1 )); then
+            export OMARCHY_USB_DISK_IMAGE=1
+        else
+            unset OMARCHY_USB_DISK_IMAGE || true
         fi
         "${builder_dir}/build-usb-image.sh" "${usb_dir}"
         log "Build complete"

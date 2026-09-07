@@ -1,0 +1,12 @@
+[Unit]
+Description=Alias Broadcom Bluetooth firmware vendor suffixes
+After=local-fs.target
+Before=bluetooth.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/omarchy-mac-bluetooth-firmware
+
+[Install]
+WantedBy=multi-user.target

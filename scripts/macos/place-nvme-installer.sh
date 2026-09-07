@@ -10,10 +10,81 @@
 #   ./scripts/macos/place-nvme-installer.sh --payload payload.img.zst --esp-files DIR --confirm
 #
 # DIR needs: vmlinuz-linux-asahi, initramfs-omarchy-usb.img,
-# initramfs-linux-asahi.img, BOOTAA64.EFI (USB live GRUB).
+# initramfs-linux-asahi.img, BOOTAA64-NVME.EFI (NVMe-only live GRUB).
 set -euo pipefail
 
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# The previous placer used the USB marker and replaced the owner's grub.cfg.
+# It cannot be treated as an installed-GRUB owner because restoring that EFI
+# after this run would simply restore the obsolete live installer.
+legacy_nvme_live_on_esp() {
+  local esp=$1 cfg
+  [[ -f $esp/omarchy-usb-live ]] && return 0
+  for cfg in "$esp/grub/grub.cfg" "$esp/EFI/BOOT/grub.cfg"; do
+    [[ -f $cfg ]] || continue
+    grep -qE 'OMARCHY NVMe installer GRUB|Omarchy Mac live \(NVMe installer\)' \
+      "$cfg" && return 0
+  done
+  return 1
+}
+
+stage_nvme_live_on_esp() {
+  local esp_files=$1 esp_mnt=$2 grub_cfg=$3
+  rm -f "$esp_mnt/grub/.grub-nvme.cfg.new" \
+    "$esp_mnt/.vmlinuz-omarchy-nvme-live.new" \
+    "$esp_mnt/.initramfs-omarchy-nvme-live.img.new" \
+    "$esp_mnt/.initramfs-omarchy-nvme-install.img.new" \
+    "$esp_mnt/.initramfs-omarchy-nvme-install-plain.img.new" \
+    "$esp_mnt/EFI/BOOT/.BOOTAA64-NVME.EFI.new"
+  cp "$grub_cfg" "$esp_mnt/grub/.grub-nvme.cfg.new"
+  cp "$esp_files/vmlinuz-linux-asahi" \
+    "$esp_mnt/.vmlinuz-omarchy-nvme-live.new"
+  cp "$esp_files/initramfs-omarchy-usb.img" \
+    "$esp_mnt/.initramfs-omarchy-nvme-live.img.new"
+  cp "$esp_files/initramfs-linux-asahi.img" \
+    "$esp_mnt/.initramfs-omarchy-nvme-install.img.new"
+  cp "$esp_files/initramfs-linux-asahi-plain.img" \
+    "$esp_mnt/.initramfs-omarchy-nvme-install-plain.img.new"
+  cp "$esp_files/BOOTAA64-NVME.EFI" \
+    "$esp_mnt/EFI/BOOT/.BOOTAA64-NVME.EFI.new"
+  sync
+
+  mv "$esp_mnt/grub/.grub-nvme.cfg.new" "$esp_mnt/grub/grub-nvme.cfg"
+  mv "$esp_mnt/.vmlinuz-omarchy-nvme-live.new" \
+    "$esp_mnt/vmlinuz-omarchy-nvme-live"
+  mv "$esp_mnt/.initramfs-omarchy-nvme-live.img.new" \
+    "$esp_mnt/initramfs-omarchy-nvme-live.img"
+  mv "$esp_mnt/.initramfs-omarchy-nvme-install.img.new" \
+    "$esp_mnt/initramfs-omarchy-nvme-install.img"
+  mv "$esp_mnt/.initramfs-omarchy-nvme-install-plain.img.new" \
+    "$esp_mnt/initramfs-omarchy-nvme-install-plain.img"
+  : >"$esp_mnt/.omarchy-nvme-live.new"
+  mv "$esp_mnt/.omarchy-nvme-live.new" "$esp_mnt/omarchy-nvme-live"
+  sync
+
+  # The test interruption point proves every dependency and the marker can be
+  # committed while the previously bootable EFI executable remains untouched.
+  [[ -z ${OMARCHY_PLACER_TEST_STOP_BEFORE_EFI:-} ]] || return 9
+  mv "$esp_mnt/EFI/BOOT/.BOOTAA64-NVME.EFI.new" \
+    "$esp_mnt/EFI/BOOT/BOOTAA64.EFI"
+  sync
+}
+
+# Behavioral entry point for the unprivileged fixture in test/unit.
+if [[ -n ${OMARCHY_PLACER_TEST_ESP_STATE:-} ]]; then
+  if legacy_nvme_live_on_esp "$OMARCHY_PLACER_TEST_ESP_STATE"; then
+    printf 'legacy-nvme-live\n'
+    exit 3
+  fi
+  printf 'clean\n'
+  exit 0
+fi
+if [[ -n ${OMARCHY_PLACER_TEST_STAGE_SOURCE:-} ]]; then
+  stage_nvme_live_on_esp "$OMARCHY_PLACER_TEST_STAGE_SOURCE" \
+    "$OMARCHY_PLACER_TEST_STAGE_TARGET" "$OMARCHY_PLACER_TEST_STAGE_GRUB"
+  exit 0
+fi
 
 payload=""
 esp_files=""
@@ -26,7 +97,7 @@ usage() {
 Place omarchy-install at the tail of the largest GPT hole, then copy live GRUB.
 
   --payload PATH       payload.img or payload.img.zst (OMARCHYLIVE btrfs)
-  --esp-files DIR      vmlinuz, live+install initrds, BOOTAA64.EFI
+  --esp-files DIR      vmlinuz, live+install initrds, BOOTAA64-NVME.EFI
   --disk disk0         GPT disk (default disk0)
   --root-reserve MiB   unallocated hole to leave in front (default: payload size)
   --confirm            actually gpt add / dd / copy (otherwise print the plan)
@@ -52,7 +123,9 @@ done
 [[ $disk != *rdisk* ]] || fail "use diskN not rdiskN for --disk (gpt), rdisk is only for dd of the new slice"
 [[ $(uname -s) == Darwin ]] || fail "this script is for macOS (gpt / diskutil / mount_msdos)"
 
-for f in vmlinuz-linux-asahi initramfs-omarchy-usb.img initramfs-linux-asahi.img BOOTAA64.EFI; do
+for f in vmlinuz-linux-asahi initramfs-omarchy-usb.img \
+  initramfs-linux-asahi.img initramfs-linux-asahi-plain.img \
+  BOOTAA64-NVME.EFI; do
   [[ -f $esp_files/$f ]] || fail "missing $esp_files/$f"
 done
 
@@ -180,6 +253,49 @@ hash_tree() {
   done)
   return 0
 }
+
+file_bytes() {
+  stat -f %z "$1"
+}
+
+# Refuse before changing the GPT if the ESP cannot hold the temporary live
+# files, a pre-existing BOOTAA64 backup, and write slack. Require room for a
+# complete staged copy even on retry: the currently bootable files are not
+# reclaimable until every replacement is safely on the ESP.
+esp_require_nvme_space() {
+  local required=$((16 * 1024 * 1024)) avail_kb rel
+  for rel in BOOTAA64-NVME.EFI vmlinuz-linux-asahi \
+    initramfs-omarchy-usb.img initramfs-linux-asahi.img \
+    initramfs-linux-asahi-plain.img; do
+    required=$((required + $(file_bytes "$esp_files/$rel")))
+  done
+  required=$((required + $(file_bytes "$grub_cfg")))
+
+  # A fresh placement preserves the current EFI executable. A retry while the
+  # NVMe marker exists reuses the prior backup instead of backing up live GRUB.
+  if [[ ! -f $esp_mnt/omarchy-nvme-live && \
+    -f $esp_mnt/EFI/BOOT/BOOTAA64.EFI ]]; then
+    required=$((required + $(file_bytes "$esp_mnt/EFI/BOOT/BOOTAA64.EFI")))
+  fi
+
+  avail_kb=$(df -Pk "$esp_mnt" | awk 'NR==2 { print $4 }')
+  [[ $avail_kb =~ ^[0-9]+$ ]] || fail "could not determine free space on ESP $esp_dev"
+  (( avail_kb * 1024 >= required )) || \
+    fail "ESP has ${avail_kb}KiB free; need $((required / 1024))KiB for staged NVMe live files and safe write slack"
+}
+
+grub_cfg=""
+if [[ -f $esp_files/grub-nvme-installer.cfg ]]; then
+  grub_cfg=$esp_files/grub-nvme-installer.cfg
+else
+  fail "no grub-nvme-installer.cfg in $esp_files"
+fi
+if [[ ! -f $esp_mnt/omarchy-nvme-live ]] && \
+  legacy_nvme_live_on_esp "$esp_mnt"; then
+  fail "ESP contains an old-style NVMe-live GRUB; restore the intended installed bootloader/config from a known backup before removing /omarchy-usb-live and retrying"
+fi
+esp_require_nvme_space
+
 before=$(hash_tree "$esp_mnt")
 printf '==> hashed ESP firmware; unmounting before partition add\n'
 diskutil unmount "$esp_dev" >/dev/null 2>&1 || umount "$esp_mnt" >/dev/null 2>&1 || true
@@ -257,21 +373,23 @@ else
   [[ -n $auto_mnt && -d $auto_mnt ]] && esp_mnt=$auto_mnt
 fi
 mkdir -p "$esp_mnt/EFI/BOOT" "$esp_mnt/grub"
-cp "$esp_files/BOOTAA64.EFI" "$esp_mnt/EFI/BOOT/BOOTAA64.EFI"
-grub_cfg=""
-if [[ -f $esp_files/grub-nvme-installer.cfg ]]; then
-  grub_cfg=$esp_files/grub-nvme-installer.cfg
-elif [[ -f $esp_files/grub.cfg ]]; then
-  grub_cfg=$esp_files/grub.cfg
-else
-  fail "no grub-nvme-installer.cfg or grub.cfg in $esp_files"
+# Preserve only the EFI executable. The installed grub.cfg and custom.cfg stay
+# in place and are never parsed or copied into another config. A retry keeps
+# the first backup instead of mistaking the temporary NVMe GRUB for an OS.
+if [[ ! -f $esp_mnt/omarchy-nvme-live ]]; then
+  rm -f "$esp_mnt/grub/omarchy-nvme-had-bootloader"
+  if [[ -f $esp_mnt/EFI/BOOT/BOOTAA64.EFI ]]; then
+    cp "$esp_mnt/EFI/BOOT/BOOTAA64.EFI" \
+      "$esp_mnt/EFI/BOOT/.BOOTAA64.EFI.omarchy-nvme-bak.new"
+    mv "$esp_mnt/EFI/BOOT/.BOOTAA64.EFI.omarchy-nvme-bak.new" \
+      "$esp_mnt/EFI/BOOT/BOOTAA64.EFI.omarchy-nvme-bak"
+    : >"$esp_mnt/grub/omarchy-nvme-had-bootloader"
+  fi
 fi
-cp "$grub_cfg" "$esp_mnt/grub/grub.cfg"
-cp "$grub_cfg" "$esp_mnt/EFI/BOOT/grub.cfg"
-cp "$esp_files/vmlinuz-linux-asahi" "$esp_mnt/vmlinuz-linux-asahi"
-cp "$esp_files/initramfs-omarchy-usb.img" "$esp_mnt/initramfs-omarchy-usb.img"
-cp "$esp_files/initramfs-linux-asahi.img" "$esp_mnt/initramfs-linux-asahi.img"
-: >"$esp_mnt/omarchy-usb-live"
+
+# Private names do not collide with an omarchy-mac installation's standard
+# kernel/initrd. BOOTAA64.EFI is switched only after every dependency lands.
+stage_nvme_live_on_esp "$esp_files" "$esp_mnt" "$grub_cfg"
 
 after=$(hash_tree "$esp_mnt")
 [[ $before == "$after" ]] || fail "m1n1/vendorfw/asahi changed — aborting"

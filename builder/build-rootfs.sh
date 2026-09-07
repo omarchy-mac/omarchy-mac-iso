@@ -169,8 +169,51 @@ for pkg in "${forbidden_packages[@]}"; do
   fi
 done
 
+# extra sometimes ships aquamarine with a new soname before hyprland is
+# rebuilt (libaquamarine.so.14 vs hyprland wanting .so.13). Pacstrap then
+# fails. Pin a cached aquamarine that still provides the soname hyprland
+# asks for, and IgnorePkg the extra one. IgnorePkg must live under [options]
+# — appending it lands in [aur] on the Mac pacman.conf and pacman ignores it.
+# pacstrap is pacman -S, which cannot install a local tarball; use pacman -U.
+aquamarine_pin=""
+pin_aquamarine_if_soname_skew() {
+  local want have f
+  want=$(pacman -Si hyprland 2>/dev/null | tr ' ' '\n' | grep -E '^libaquamarine\.so=[0-9]+-64$' | head -1 || true)
+  have=$(pacman -Si aquamarine 2>/dev/null | tr ' ' '\n' | grep -E '^libaquamarine\.so=[0-9]+-64$' | head -1 || true)
+  [[ -n $want && -n $have && $want != "$have" ]] || return 0
+  local so=${want#libaquamarine.so=}
+  so=${so%-64}
+  for f in /var/cache/pacman/pkg/aquamarine-*-aarch64.pkg.tar.xz \
+           /var/cache/pacman/pkg/aquamarine-*-aarch64.pkg.tar.zst; do
+    [[ -f $f ]] || continue
+    tar -tf "$f" 2>/dev/null | grep -q "libaquamarine.so.${so}$" || continue
+    aquamarine_pin=$f
+  done
+  [[ -n $aquamarine_pin ]] \
+    || fail "hyprland wants $want but extra aquamarine provides $have, and no matching aquamarine is in /var/cache/pacman/pkg"
+  log "extra aquamarine is $have, hyprland wants $want; pinning $aquamarine_pin"
+}
+
+# Insert IgnorePkg inside [options]. Appending the file puts it in the last
+# repo section (aur here), which pacman rejects.
+write_ignorepkg() {
+  local src=$1 dest=$2
+  awk '
+    /^IgnorePkg([[:space:]]|=)/ { next }
+    /^\[options\]/ {
+      print
+      print "IgnorePkg = aquamarine"
+      next
+    }
+    { print }
+  ' "$src" >"$dest"
+  grep -q '^IgnorePkg = aquamarine$' "$dest" \
+    || fail "failed to put IgnorePkg = aquamarine under [options] in $dest"
+}
+
 sync_package_dbs
 assemble_packages
+pin_aquamarine_if_soname_skew
 
 loop=""
 mnt=""
@@ -229,10 +272,19 @@ mount -t tmpfs tmpfs "$mnt/run"
 mount -t tmpfs tmpfs "$mnt/boot"
 
 log "pacstrap base networkmanager iwd mesa asahi-audio gum + ${#extra_packages[@]} packages"
-pacstrap -c "$mnt" base networkmanager iwd mesa asahi-audio \
-  alsa-ucm-conf-asahi speakersafetyd pipewire-pulse gum \
-  parted gptfdisk btrfs-progs dosfstools grub \
-  "${extra_packages[@]}"
+base_pkgs=(base networkmanager iwd mesa asahi-audio
+  alsa-ucm-conf-asahi speakersafetyd pipewire-pulse gum
+  parted gptfdisk btrfs-progs dosfstools grub)
+if [[ -n $aquamarine_pin ]]; then
+  write_ignorepkg /etc/pacman.conf "$work/pacman-strap.conf"
+  pacstrap -c -C "$work/pacman-strap.conf" "$mnt" "${base_pkgs[@]}"
+  log "pacman -U pinned aquamarine (pacstrap is pacman -S and cannot take a pkg file)"
+  pacman -U --noconfirm --root "$mnt" --cachedir /var/cache/pacman/pkg \
+    "$aquamarine_pin"
+  pacstrap -c -C "$work/pacman-strap.conf" "$mnt" "${extra_packages[@]}"
+else
+  pacstrap -c "$mnt" "${base_pkgs[@]}" "${extra_packages[@]}"
+fi
 
 local_pkgs=()
 for name in omarchy-keyring ttf-jetbrains-mono-nerd-basic omarchy-settings omarchy; do
@@ -245,6 +297,10 @@ pacman -U --noconfirm --needed --root "$mnt" --cachedir /var/cache/pacman/pkg \
   "${local_pkgs[@]}"
 
 install -m644 "$repo_root/configs/usb/rootfs/pacman.conf" "$mnt/etc/pacman.conf"
+if [[ -n $aquamarine_pin ]]; then
+  write_ignorepkg "$mnt/etc/pacman.conf" "$work/pacman-live.conf"
+  install -m644 "$work/pacman-live.conf" "$mnt/etc/pacman.conf"
+fi
 [[ -f /etc/pacman.d/mirrorlist ]] || fail "host /etc/pacman.d/mirrorlist missing"
 install -m644 /etc/pacman.d/mirrorlist "$mnt/etc/pacman.d/mirrorlist"
 [[ -f /etc/pacman.d/mirrorlist.asahi-alarm ]] || fail "host asahi-alarm mirrorlist missing"
@@ -254,12 +310,31 @@ umount "$mnt/boot"
 umount "$mnt/run"
 
 kver=${OMARCHY_KVER:-$(uname -r)}
-modules_src=${OMARCHY_MODULES_DIR:-/usr/lib/modules/$kver}
+modules_src=$(readlink -f "${OMARCHY_MODULES_DIR:-/usr/lib/modules/$kver}")
 log "Copying modules $kver from $modules_src (match ESP vmlinuz)"
 mkdir -p "$mnt/usr/lib/modules"
 [[ -d $modules_src ]] || fail "no modules at $modules_src"
+# cp -a of a symlink copies the link. A side-loaded 7.2 tree is often
+# /usr/lib/modules/$kver -> ~/code/research/... which does not exist on the Air.
+rm -rf "$mnt/usr/lib/modules/$kver"
 cp -a "$modules_src" "$mnt/usr/lib/modules/$kver"
+[[ ! -L $mnt/usr/lib/modules/$kver ]] \
+  || fail "payload modules $kver is still a symlink (copied the link, not the tree)"
 [[ -d $mnt/usr/lib/modules/$kver ]] || fail "failed to copy modules for $kver"
+[[ -f $mnt/usr/lib/modules/$kver/kernel/drivers/md/dm-crypt.ko ]] \
+  || fail "no dm-crypt.ko in copied modules (LUKS install will fail)"
+[[ -f $mnt/usr/lib/modules/$kver/kernel/drivers/gpu/drm/apple/appledrm.ko ]] \
+  || fail "no appledrm.ko in copied modules"
+
+# linux-asahi is forbidden, so /boot/vmlinuz-linux-asahi never exists.
+# Alarm/base can still leave a preset; mkinitcpio -P (avd-fw, omarchy-mac)
+# then fails on every ISO-installed host. Boot images live on the ESP.
+rm -f "$mnt/etc/mkinitcpio.d/linux-asahi.preset"
+for hook in 90-mkinitcpio-install.hook 60-mkinitcpio-remove.hook; do
+  [[ -f $mnt/usr/share/libalpm/hooks/$hook ]] || continue
+  mv "$mnt/usr/share/libalpm/hooks/$hook" \
+    "$mnt/usr/share/libalpm/hooks/$hook.disabled"
+done
 
 # Same drop-in bootstrap.sh / omarchy-provision-owner write. Arch `base`
 # comments %wheel out of /etc/sudoers; without this, pacstrap'd sudo cannot
@@ -278,6 +353,17 @@ install -m644 "$repo_root/configs/usb/rootfs/sysctl-quiet-console.conf" \
   "$mnt/etc/sysctl.d/90-omarchy-quiet-console.conf"
 install -d "$mnt/usr/local/sbin"
 install -d "$mnt/usr/local/share/omarchy-mac-iso"
+git_ref=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf unknown)
+source_state=clean
+[[ -z $(git -C "$repo_root" status --porcelain --untracked-files=normal 2>/dev/null) ]] \
+  || source_state=dirty
+{
+  printf 'built_utc: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'built_from_ref: %s\n' "$git_ref"
+  printf 'source_state: %s\n' "$source_state"
+  printf 'kernel: linux-asahi %s\n' "$kver"
+  printf 'kernel_source_ref: %s\n' "${OMARCHY_KERNEL_SOURCE_REF:-not-recorded}"
+} >"$mnt/etc/omarchy-mac-iso-build"
 install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-install" \
   "$mnt/usr/local/sbin/omarchy-mac-install"
 install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-live-welcome" \
@@ -292,6 +378,14 @@ install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-patch-j613-dcp" \
   "$mnt/usr/local/sbin/omarchy-mac-patch-j613-dcp"
 install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-patch-j613-dcp" \
   "$mnt/usr/local/share/omarchy-mac-iso/omarchy-mac-patch-j613-dcp"
+install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-dump-board" \
+  "$mnt/usr/local/sbin/omarchy-mac-dump-board"
+install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-validate" \
+  "$mnt/usr/local/sbin/omarchy-mac-validate"
+install -m755 "$repo_root/configs/usb/rootfs/omarchy-mac-bluetooth-firmware" \
+  "$mnt/usr/local/sbin/omarchy-mac-bluetooth-firmware"
+install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-bluetooth-firmware.service" \
+  "$mnt/etc/systemd/system/omarchy-mac-bluetooth-firmware.service"
 install -d "$mnt/usr/local/share/omarchy-mac-iso/m1n1"
 install -m644 "$repo_root/configs/m1n1/j613-dcp-overlay.dts" \
   "$mnt/usr/local/share/omarchy-mac-iso/m1n1/j613-dcp-overlay.dts"
@@ -372,6 +466,8 @@ install -m644 "$repo_root/configs/usb/rootfs/omarchy-mac-quiet-console.service" 
 systemctl --root="$mnt" enable omarchy-mac-usb-ready.service
 systemctl --root="$mnt" enable omarchy-mac-asahi-hw.service
 systemctl --root="$mnt" enable omarchy-mac-quiet-console.service
+systemctl --root="$mnt" enable omarchy-mac-bluetooth-firmware.service
+systemctl --root="$mnt" enable bluetooth.service 2>/dev/null || true
 systemctl --root="$mnt" enable NetworkManager.service
 systemctl --root="$mnt" enable speakersafetyd.service
 systemctl --root="$mnt" --global enable pipewire.socket pipewire-pulse.socket wireplumber.service 2>/dev/null || true

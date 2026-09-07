@@ -1,0 +1,230 @@
+#!/bin/bash
+# One-command, read-only pre/post-install validation bundle.
+set -euo pipefail
+
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+log() { printf '==> %s\n' "$*"; }
+
+usage() {
+  cat <<'EOF'
+Usage: sudo omarchy-mac-validate [--phase pre-install|post-install]
+
+Create a sanitized validation archive under /tmp. Run once from the live
+environment before installing and once from the installed root after boot.
+EOF
+}
+
+phase=""
+while (( $# > 0 )); do
+  case $1 in
+    --phase)
+      (( $# >= 2 )) || fail "--phase needs a value"
+      phase=$2
+      shift 2
+      ;;
+    -h|--help) usage; exit 0 ;;
+    *) fail "unknown argument: $1" ;;
+  esac
+done
+[[ -z $phase || $phase == pre-install || $phase == post-install ]] \
+  || fail "phase must be pre-install or post-install"
+(( EUID == 0 )) || fail "run as root (sudo omarchy-mac-validate)"
+
+dt=/sys/firmware/devicetree/base
+[[ -d $dt ]] || fail "no Apple Silicon device-tree"
+compat=$(tr '\0' ' ' <"$dt/compatible" 2>/dev/null || true)
+model=$(tr '\0' '\n' <"$dt/model" 2>/dev/null | head -1 || true)
+board=$(printf '%s' "$compat" | tr ' ' '\n' | grep -m1 '^apple,j' || printf unknown)
+board=$(printf '%s' "$board" | sed 's/^apple,//')
+
+if [[ -z $phase ]]; then
+  if [[ -d /run/omarchy-root ]] || findmnt -n -o FSTYPE / 2>/dev/null | grep -qx overlay; then
+    phase=pre-install
+  else
+    phase=post-install
+  fi
+fi
+
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+work=$(mktemp -d /tmp/omarchy-mac-validation.XXXXXX)
+dest=$work/$board-$phase-$stamp
+mkdir -p "$dest"
+trap 'rm -rf "$work"' EXIT
+results=$dest/RESULTS.tsv
+printf 'check\tstatus\tdetail\n' >"$results"
+
+result() {
+  local key=$1 status=$2 detail
+  shift 2
+  detail=$(printf '%s' "$*" | tr '\t\r\n' '   ')
+  printf '%s\t%s\t%s\n' "$key" "$status" "$detail" >>"$results"
+}
+
+result phase info "$phase"
+result board info "$board"
+result model info "$model"
+result kernel info "$(uname -r)"
+
+if [[ $phase == pre-install ]]; then
+  result installs pending "capture made before installation"
+else
+  result installs pass "this installed root reached userspace"
+fi
+
+fb_name=$(cat /sys/class/graphics/fb0/name 2>/dev/null || true)
+if [[ -d /sys/module/appledrm ]] || printf '%s' "$fb_name" | grep -qi apple; then
+  result graphics enhanced "apple-drm active; framebuffer=$fb_name"
+elif printf '%s' "$fb_name" | grep -qi simple; then
+  result graphics baseline "simpledrm active; installation result is still useful"
+else
+  result graphics unknown "framebuffer=$fb_name"
+fi
+
+fb_size=$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null || true)
+[[ -n $fb_size ]] \
+  && result display_mode info "$fb_size" \
+  || result display_mode unknown "no fb0 virtual_size"
+
+if compgen -G '/dev/dri/renderD*' >/dev/null; then
+  result render_node present "DRM render node exists"
+else
+  result render_node absent "CPU composition may be in use"
+fi
+
+wifi_count=0
+for interface in /sys/class/net/*; do
+  [[ -d $interface/wireless ]] && wifi_count=$((wifi_count + 1))
+done
+(( wifi_count > 0 )) \
+  && result wifi present "$wifi_count wireless interface(s)" \
+  || result wifi absent "no wireless sysfs interface"
+
+bt_count=$( { find /sys/class/bluetooth -mindepth 1 -maxdepth 1 -name 'hci*' 2>/dev/null || true; } | wc -l)
+(( bt_count > 0 )) \
+  && result bluetooth present "$bt_count controller(s)" \
+  || result bluetooth absent "no hci controller"
+
+typec_count=$( { find /sys/class/typec -mindepth 1 -maxdepth 1 -type l 2>/dev/null || true; } | wc -l)
+(( typec_count > 0 )) \
+  && result typec present "$typec_count Type-C object(s)" \
+  || result typec unknown "no /sys/class/typec objects"
+
+usb_count=$( { find /sys/bus/usb/devices -mindepth 1 -maxdepth 1 -type l 2>/dev/null || true; } | wc -l)
+(( usb_count > 0 )) \
+  && result usb present "$usb_count USB object(s)" \
+  || result usb absent "no USB bus objects"
+
+if [[ -s /proc/asound/cards ]]; then
+  audio_count=$(grep -cE '^[[:space:]]*[0-9]+[[:space:]]' /proc/asound/cards || true)
+  result audio present "$audio_count ALSA card line(s)"
+else
+  result audio absent "no ALSA cards"
+fi
+
+if grep -qiE 'Apple.*(Keyboard|Trackpad)|Apple Internal Keyboard' /proc/bus/input/devices 2>/dev/null; then
+  result internal_input present "Apple keyboard/trackpad input node found"
+else
+  result internal_input unknown "confirm keyboard and trackpad manually"
+fi
+
+if lsblk -rno PARTLABEL 2>/dev/null | grep -qx omarchy-install; then
+  [[ $phase == pre-install ]] \
+    && result installer_slice present "omarchy-install is available to consume" \
+    || result installer_slice warn "omarchy-install remains after installed boot"
+else
+  [[ $phase == post-install ]] \
+    && result installer_slice consumed "temporary slice is absent" \
+    || result installer_slice unknown "not using the NVMe installer-slice path"
+fi
+
+apple_count=$(lsblk -rno PARTTYPE 2>/dev/null \
+  | grep -ciE '7c3457ef-0000-11aa-aa11-00306543ecac|52637672-7900-11aa-aa11-00306543ecac|69646961-6700-11aa-aa11-00306543ecac' || true)
+(( apple_count > 0 )) \
+  && result apple_partitions present "$apple_count protected Apple GPT partition(s) visible" \
+  || result apple_partitions unknown "no recognized Apple GPT type in lsblk"
+
+root_source=$(findmnt -n -o SOURCE / 2>/dev/null | sed -E 's/\[[^]]+\]$//' || true)
+root_type=$(findmnt -n -o FSTYPE / 2>/dev/null || true)
+result root info "$root_source $root_type"
+if [[ $root_source == /dev/mapper/* ]]; then
+  result encryption encrypted "root is device-mapper backed"
+else
+  result encryption unencrypted-or-live "root is not a mapper device"
+fi
+
+if [[ -f /etc/omarchy-mac-iso-build ]]; then
+  cp /etc/omarchy-mac-iso-build "$dest/BUILD_INFO"
+  result build_info present "embedded build metadata included"
+else
+  result build_info missing "image predates embedded build metadata"
+fi
+
+cat >"$dest/MANUAL-CHECKLIST.txt" <<'EOF'
+Fill this in after the test. Use yes / no / not tested plus a short note.
+
+Desktop reaches a usable session:
+Display resolution and scaling look correct:
+Built-in keyboard:
+Built-in trackpad:
+Wi-Fi association and traffic:
+Bluetooth pairing and traffic:
+Audio speakers/headphones:
+Left-side USB ports:
+Right-side USB ports:
+Suspend and resume:
+Cold boot:
+Warm reboot:
+macOS still boots:
+Recovery still starts:
+Anything surprising:
+EOF
+
+cat >"$dest/SUMMARY.txt" <<EOF
+Omarchy Apple Silicon validation
+
+board: $board
+model: $model
+phase: $phase
+collected: $stamp
+
+Levels:
+  installs  live boot, install, first boot, and Apple partitions preserved
+  usable    input, network, USB, audio, and desktop confirmed manually
+  enhanced  board-specific features beyond fallback (currently M3 DCP)
+
+The automated results do not claim usability. Complete MANUAL-CHECKLIST.txt.
+This bundle intentionally excludes hostname, IP/MAC addresses, filesystem
+UUIDs, raw device trees, and raw m1n1 boot data.
+EOF
+
+collector=$(command -v omarchy-mac-dump-board || true)
+if [[ -n $collector ]]; then
+  if collector_output=$("$collector" 2>&1); then
+    printf '%s\n' "$collector_output" >"$dest/board-collector.log"
+    board_bundle=$(printf '%s\n' "$collector_output" | tail -n1)
+    if [[ -f $board_bundle ]]; then
+      cp "$board_bundle" "$dest/"
+      result board_bundle present "$(basename "$board_bundle")"
+    else
+      result board_bundle failed "collector returned no archive"
+    fi
+  else
+    printf '%s\n' "$collector_output" >"$dest/board-collector.log"
+    result board_bundle failed "see board-collector.log"
+  fi
+else
+  result board_bundle missing "omarchy-mac-dump-board is not installed"
+fi
+
+if command -v zstd >/dev/null; then
+  tarball=/tmp/omarchy-mac-validation-$board-$phase-$stamp.tar.zst
+  tar -C "$work" -cf - "$(basename "$dest")" | zstd -q -o "$tarball"
+else
+  tarball=/tmp/omarchy-mac-validation-$board-$phase-$stamp.tar.gz
+  tar -C "$work" -czf "$tarball" "$(basename "$dest")"
+fi
+chmod a+r "$tarball"
+log "wrote sanitized $phase bundle $tarball"
+printf '%s\n' "$tarball"
+trap - EXIT
+rm -rf "$work"
