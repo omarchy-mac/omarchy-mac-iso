@@ -6,6 +6,13 @@ This repo owns the live USB and installer. [omarchy-mac](https://github.com/omar
 
 Default branch is `main`. That is unrelated to `omarchy-mac`'s `main` (still v3.x); this tree has no v3 history.
 
+Roadmap: [image architecture and validation status](plans/apple-silicon-image.md),
+[Marcelo's macOS installer integration](plans/asahi-installer-integration.md), and
+[managed kernel updates](plans/managed-kernel-updates.md), supported by the
+[kernel input audit](docs/kernel-input-audit-20260907.md). Integration and kernel
+management are planned work, not features enabled by these documents. The image
+overview distinguishes PR-branch hardware evidence from merged functionality.
+
 A Mac with no Asahi/m1n1 cannot boot this USB. iBoot will not load it until macOS has run the Asahi **UEFI-only** provision. Shrink APFS from macOS, never from Linux.
 
 ## USB image (Apple Silicon host)

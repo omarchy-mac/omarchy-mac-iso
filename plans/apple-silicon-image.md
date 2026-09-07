@@ -1,447 +1,201 @@
-# Plan: an Apple Silicon install image for Omarchy Mac
+# Apple Silicon image: architecture, status, and roadmap
 
-## Context
+Status checkpoint: 2026-09-07. This is the shared design overview, not release
+approval or instructions to modify a disk. [README](../README.md) documents the
+builder in the checked-out revision; [AGENTS.md](../AGENTS.md) sets safety rules.
+Implementation details belong to the workstream plans linked below.
 
-Installing Omarchy Mac today is two curl-to-bash scripts: the Asahi Alarm
-installer from macOS (~8.5 min) and `omarchy-mac-setup` on the booted Arch
-(~14 min, three reboots, two questions, and an in-place re-encryption that
-rewrites every block of the root partition). It works, but it is a long tail of
-network-dependent steps where any one failure lands the user in a half-built
-machine, and it needs a working `nmtui` before anything can start.
+## Outcome and workstreams
 
-Malik's proposal: do Asahi's one-time UEFI-only provision from macOS, then boot
-our own USB straight into a live installer that pulls firmware from the internal
-ESP and installs from bundled offline packages. **That is the right shape, and
-the hard half is already built by Asahi upstream.** This plan covers what to
-build, in what order, and which conventions to inherit from `omacom-io/omarchy-iso`.
+Deliver Omarchy beside macOS with one Linux-side identity/password setup and
+encryption at installation time, rather than installing a desktop and then
+rewriting its root to encrypt it. Preserve macOS and Apple boot firmware.
 
-Target: macOS step unchanged (~6-8 min, dominated by Apple's own stub download
-and not compressible), then **one boot, one set of questions, one reboot,
-~3-5 minutes**, fully offline, with encryption as a fresh `luksFormat` instead
-of a full-partition rewrite.
-
-Upstream's own `plans/aarch64-support.md` states **"Apple Silicon (Asahi) and
-SBCs (U-Boot/rpi-firmware) are out of scope"** — this is our lane, not a
-duplicate of work they are about to land.
-
-## What was verified on hardware (2026-08-22, M2 Max)
-
-Spikes live in `~/code/omarchy-mac-iso-spike/`. Reports:
-`spike-usb-result.txt`, `spike-rootimg-result.txt`, `spike-uboot-usb-result.txt`.
-
-| Claim | Evidence |
-|---|---|
-| Firmware comes from the internal ESP with no custom code | Stock `asahi` initcpio hook. Device-tree `asahi,efi-system-partition` is `bf93c7c5-…`. `/boot/vendorfw/firmware.cpio` is 32 MB. In the spike initramfs, `/vendorfw` and `/lib/firmware/vendor` listed `apple`, `asmedia`, `brcm`. |
-| USB storage works in an initramfs **if `dwc3-apple` is present** | Three Type-C controllers bound to `dwc3-apple` (not `dwc3-of-simple`). Lexar stick appeared as `/dev/sda` at ~3.3 s. `130304c000.mux` bound to `apple-display-crossbar`. Deferred-device list empty. |
-| The "USB-PD dependency cycle" dmesg is a red herring | Same `Fixed dependency cycle(s)` lines appear on a working full boot. `fw_devlink=permissive` is not required. |
-| Stock `asahi-scripts` hook is stale | `asahi-scripts` 20260127.1 `initcpio/install/asahi` adds `dwc3? dwc3-of-simple?` and never `dwc3-apple?` or `mux-apple-display-crossbar?`. That is why an earlier spike loaded ten USB modules at refcount 0. Worth reporting upstream. |
-| Loop-mount of a USB `root.img` works | 32 MB ext4 `root.img` on FAT label `OMARCHYSPK` → `losetup /dev/loop0` → mount ro → marker `omarchy-mac-live-ok` read. `result: PASS`. |
-| U-Boot boots our stick | Interrupted autoboot, `usb start; bootflow scan -l usb; bootflow select 0; bootflow boot`. One valid bootflow: `usb_mass_storage.lun0` partition 1, `/EFI/BOOT/BOOTAA64.EFI`. Kernel cmdline carried `spike=uboot-usb`. Loop-mount still `PASS`. |
-| NVMe is tried before USB | `boot_targets=nvme usb`, `bootdelay=1`, `bootcmd=bootflow scan -b`. A machine that already has Linux on NVMe **must** interrupt U-Boot; `bootflow scan -b` without `setenv boot_targets usb` boots Omarchy GRUB. A fresh UEFI-only machine has no NVMe EFI payload, so the stick should win automatically. Do not `saveenv`. |
-| Built-in keyboard talks to U-Boot | `stdin=serial,usbkbd,spikbd,mtpkbd`. Typed the bootflow commands on the laptop keyboard. |
-| We must not touch APFS | Asahi policy: altering APFS containers forces a DFU restore. UEFI-only leaves unallocated GPT space for a later root. |
-| The medium needs its own ESP and must not manage `boot.bin` until installed | Asahi boot-process guide. USB `BOOTAA64.EFI` is standalone GRUB (`grub-mkstandalone`). After install we own the System ESP and may `update-m1n1`; the live installer must not. |
-| UEFI-only free space, from source | `asahi-installer` `main.py` / `osinstall.py`: user **resizes APFS first**, then "install into free space". UEFI-only template is EFI only (`500MB`, no `expand: true`), plus a 2.5 GB APFS stub. Leftover of that free area stays unallocated. It does not create an empty Linux partition, and it does not ask "how much for the OS" because it is not expandable. Firmware still lands on the ESP (`copy_firmware: true`, `copy_installer_data: true`). |
-| Os-package zip, from source | Raw zip: `esp/` tree + `root.img` (size multiple of 4 KiB). Optional `boot.img`, `icon`. `fdcopy` onto `/dev/rdiskNsM`. No sparse format. `INSTALLER_DATA` / `REPO_BASE` is the supported third-party hook. `supported_fw` filters IPSW versions (`12.3`, `12.3.1`, `13.5`, `14.8.3`), not kernel features. |
-| Alarm size precedent is **Minimal**, not a desktop | Alarm Minimal `root.img` is 2,209,614,225 bytes; Desktop is 12.7 GB in a **1.88 GiB** zip. This machine's `@` subvolume is ~13 GB (`du -sx /` does not cross `@home`). A full Omarchy image will look like Desktop, not Minimal. GitHub Releases' 2 GiB per-file cap is tight. |
-
-USB-to-USB `dd` (through last partition, not whole disk) is proven from
-the installed Omarchy (2026-08-23): 14.9G Lexar → 14.5G stick, then that
-stick booted to autologin root, `gum 2.0.0`, `fnmode=1`. Proven from a
-booted live USB the same day: 14.5G stick → Lexar; U-Boot skipped
-`05dc:c753` until `usb reset` twice, then the Lexar booted. Overlay +
-`switch_root`, systemd userspace, and Wi-Fi association are done
-(2026-08-23). Partition install (ESP + persistent USB root, no overlay) is proven on
-metal (2026-08-24): 14.5G stick, GRUB `Omarchy Mac (USB root)`,
-`omarchy-usb-wait` mounted the new UUID, hostname `omarchy-mac`. Free-space install is proven on the Lexar hole (2026-08-24): live
-partitions kept, `OMARCHYROOT` 11.4G. Wipe-install 14.5G stick booted
-warm, `root@omarchy-mac`, nmtui Rescan then `ping www.google.com`. NVMe
-hole after macOS APFS shrink (2026-08-24): p7 46G, existing Omarchy still
-boots, new GRUB entry `root@omarchy-mac`. Shrink APFS from macOS, never
-from Linux. Not yet: LUKS or Omarchy packages on the new root.
-
-## Architecture: one rootfs, two front doors
-
-Build a single provisioned Omarchy root filesystem image, then ship it two ways:
-
-1. **Live USB image** (`.img`, GPT + FAT32 ESP + payload). Boots via m1n1/U-Boot
-   after a UEFI-only provision, runs a TUI installer, supports a fresh
-   `luksFormat`, doubles as a repair/reinstall medium. This is the encrypted
-   default and the path S1 unblocked.
-2. **asahi-installer os package** (zip + our own `installer_data.json`) — the
-   macOS one-liner offers "Omarchy Mac" directly, no USB stick. Unencrypted
-   fast path. Encryption afterwards is `omarchy-system-btrfs-migrate --encrypt`
-   **if** `/boot` is already the ESP — not a full `omarchy-mac-setup` run, which
-   would try to install Omarchy again.
-
-The payload is **one artifact**: `root.img`, a btrfs filesystem image with
-`@` / `@home` / `@log` / `@factory`. Keep the image **uncompressed (or
-`compress=none`)** so the published zip still shrinks; Alarm Desktop's 12.7 GB
-image zipping to 1.88 GiB only works because the filesystem data is still
-compressible. Internal btrfs zstd makes the zip larger, not smaller. After
-install, new writes can compress.
-
-Two layouts that S1 showed both work. **(a) is what `--usb` ships**, proven on
-metal 2026-08-23 (`payload=/dev/sda2`, `OMARCHY_MAC_USB_USERSPACE pid=1`).
-(b) was the spike and the first busybox image.
-
-- **(a) Payload partition that *is* the btrfs image.** GPT: FAT32 ESP + one
-  Linux partition labelled `OMARCHYLIVE`, subvol `@`. Live boot mounts that
-  partition read-only and overlays a tmpfs, then `switch_root`. Install is
-  `dd` of the partition onto the target.
-- **(b) `root.img` as a file on the FAT ESP.** Live boot `losetup` + mount.
-  Fine for development; extra loop layer in production. A real Omarchy root
-  will not fit on the 512 MiB ESP.
-
-Live boot command line: `systemd.unit=omarchy-mac-install.target` so only the
-installer starts. Booting the default target later gives a live desktop for
-free. The os-package path does not pass that unit, so the same image first-boots
-into owner setup (`omarchy-provision-owner`).
-
-Initramfs (small): `base asahi udev` plus an explicit module list that **does
-not trust** the packaged asahi hook for USB:
-
-```
-dwc3-apple dwc3 phy-apple-atc mux-apple-display-crossbar
-tps6598x typec xhci-plat-hcd xhci-hcd usb-storage uas loop
-```
-
-Then a hook that waits for the payload, sets up overlay, `switch_root`.
-
-Install:
-
-```
-pick target free space → parted (read back the slot, never guess) →
-optional fresh luksFormat → dd root.img → btrfs resize max →
-btrfstune -u → personalize (fstab, crypttab, hostname, user, keymap, locale) →
-mkinitcpio -P (asahi hook **and** dwc3-apple) → GRUB into the existing ESP
-(EFI/BOOT and grub/ only; see System ESP modes below) → @factory snapshot → reboot
-```
-
-Hard constraints, as refusals not comments:
-
-- Never resize or touch APFS (`7C3457EF-…`), iBoot (`69646961-…`), or Recovery
-  (`52637672-…`).
-- Live installer never writes `m1n1/boot.bin`, `vendorfw/`, or `asahi/` on the
-  internal ESP. `asahi/` holds wifi/bt pairing; leave it.
-- **System ESP GRUB, two modes.** U-Boot always loads `\EFI\BOOT\BOOTAA64.EFI`
-  (no EFI boot order). **Piggyback** if that file already exists: unique
-  kernels + `grub/custom.cfg`, abort if `BOOTAA64.EFI` bytes change.
-  **Own** if it is missing (UEFI-only): `grub-mkstandalone` + marker
-  `/omarchy-mac-root`, same recipe as wipe-USB, no `mkfs.vfat`, no
-  `grub-install`, no `update-m1n1`. Hash `m1n1/` / `vendorfw/` / `asahi/`
-  before and after; abort on drift. Do not silently replace an existing GRUB.
-- Installer kernels on the System ESP live in `EFI/omarchy/`, not
-  `vmlinuz-*` on the ESP root. `10_linux` globs `/boot/vmlinuz-*` for
-  **any** `grub-mkconfig` that sees this ESP — including the installed
-  OS's pacman `update-grub` hook, not only a live-USB chroot. A leftover
-  `vmlinuz-omarchy-usb-root` becomes the newest default and pairs with
-  `initramfs-omarchy-usb-root.img` (no `encrypt` hook). Copying into
-  `EFI/omarchy/` also `rm`s those legacy names. Do not bak
-  `EFI/omarchy/` (fills a 500MB ESP). Installer ESP backups are only
-  `*.omarchy-bak` for `BOOTAA64.EFI` and grub configs.
-- This machine already is a UEFI-only container plus Omarchy GRUB. Do **not**
-  re-run the Asahi installer to "start over". Hide or replace `BOOTAA64.EFI`
-  only after an ESP tarball is off-disk. Wiping the Omarchy LUKS root (p5)
-  does not test this — m1n1 lives on p4. p5 and p7 are not adjacent.
-- macOS `diskutil mount "EFI - OMARC"` can refuse a healthy FAT ESP
-  (`failed to mount`). Use `mount -t msdos /dev/disk0s4 /Volumes/esp`
-  (confirm the slice with `diskutil list`; ~500MB FAT). Rename
-  `EFI/BOOT/BOOTAA64.EFI.omarchy-bak` → `BOOTAA64.EFI`. Do not copy the
-  live USB's `EFI/BOOT/BOOTAA64.EFI` onto the System ESP.
-- Never create a second ESP on the USB-after-UEFI-only path. The os-package
-  path creates the one System ESP via asahi-installer; that is a different
-  front door.
-- After install the OS **does** own `update-m1n1`.
-
-Deliberately **not** an ISO9660 hybrid and **not** archiso. Asahi wants a FAT32
-ESP with `BOOTAA64.EFI`. If a custom mount hook fights us, copy archiso's
-**overlay hook**, not mkarchiso.
-
-### Divergence from upstream, stated deliberately
-
-Upstream's ISO bundles a pruned offline pacman mirror and installs with
-archinstall + pacstrap. We ship a prebuilt `root.img` because:
-
-- the asahi-installer os-package path requires a `root.img` regardless;
-- install collapses to a disk write instead of ~950 packages of pacman work;
-- archinstall wants to own the disk, and our disk is owned by APFS plus an
-  m1n1 ESP we must not manage.
-
-Do **not** bake the pacman package cache into `root.img` by default (~2 GB here).
-That fights the GitHub 2 GiB cap and the "dd in seconds" target. Optional apps
-offline can be a second artifact later.
-
-### Rejected: live root inside the initramfs
-
-A 2–3 GB initramfs loaded by GRUB under U-Boot was a fallback when USB in the
-initramfs looked impossible. USB works. That fallback is parked.
-
-There is no documented 2 GiB integer cap on GRUB arm64-efi `initrd` (the
-"initrd is too big" error is the x86 relocator; aarch64 uses a 32 GB window).
-`CONFIG_SYS_BOOTM_LEN=8MB` in `apple_m1_defconfig` applies to U-Boot `bootm`,
-not to GRUB-as-EFI. Unproven risks remain: contiguous EFI `AllocatePages`,
-GRUB verifier double-buffering, unpack RAM on 8 GB machines. We do not need
-to take them.
-
-## Conventions to inherit from `omacom-io/omarchy-iso`
-
-Same team, same style, cheap cross-pollination.
-
-- **A separate repo**, not a directory in `omarchy-mac`.
-  `github.com/omarchy-mac/omarchy-mac-iso` (2026-08-22, LICENSE only, default
-  branch `main`). Layout still open: `bin/omarchy-mac-iso-{make,boot,test,release,upload}`,
-  `builder/`, `configs/`, `plans/`, `test/{unit,integration.d}`. The "iso" name
-  stays for discoverability even though the artifact is a `.img`.
-- **`plans/*.md` as living design docs**, deleted once implemented. This file
-  is `plans/apple-silicon-image.md`.
-- **Build inside a container** driven by a thin host script, `./release` output,
-  `chown` to `HOST_UID:HOST_GID`. Carry `--edge`, `--dev`, `--rc`,
-  `--local-source <omarchy> <pkgs>`, `--no-cache`, `--debug` where they apply.
-- **Partitioning pattern, not the file.** `disk-partitioning.sh` uses **parted**,
-  never predicts a partition number, keeps `created_parts[]` +
-  `rollback_created_parts()`, and works against an image file. Copy those
-  rules. Do not import the Windows-ESP script and hope APFS GUIDs match.
-- **Phase state machine + dashboard** as in `orchestrator/phases.py`.
-- **Questions from the runtime.** Copy `install/provisioning/setup-form.sh` and
-  fail the build if it is missing. Encrypt is **not** in that form (Ctrl+C side
-  channel on the x86 ISO; a separate prompt in `omarchy-mac-setup`). Source
-  keymap / user / hostname / password from the form; keep encrypt as its own
-  question, default yes.
-- **`cidata` autoinstall** — keep the volume label so tests rhyme with
-  upstream. Do not blindly require archinstall's `user_configuration.json`.
-  Define a small unattended schema (hostname, user, hash, encrypt, keymap).
-- **CI shape:** `ubuntu-24.04-arm`, buildx, `jlumbroso/free-disk-space@v1.3.1`,
-  nightly + `workflow_dispatch`. This Mac stays the release builder until a
-  lean root is measured against the runner's ~14 GB disk.
-
-`main` stays the default branch on this repo. Do not import `omarchy-mac`'s
-`main` = v3.x rule. We have **write, not admin**.
-
-## Build inputs
-
-Repos as on this machine (`/etc/pacman.conf`):
-
-- `[omarchy-aarch64]` — `github.com/omarchy-mac/omarchy-pkgs-aarch64/releases/download/edge`
-- `[asahi-alarm]` — `https://github.com/asahi-alarm/asahi-alarm/releases/download/$arch`
-- `[core] [extra] [alarm] [aur]` — `http://mirror.archlinuxarm.org/$arch/$repo` (no valid TLS; archives are `.pkg.tar.xz`)
-
-Asahi packages we must install ourselves: `linux-asahi`, `m1n1`, `uboot-asahi`,
-`asahi-scripts`, `asahi-configs`, `asahi-fwextract`, `asahi-audio`,
-`alsa-ucm-conf-asahi`, `mesa` (asahi), `asahi-meta`, plus `speakersafetyd` /
-`pipewire-pulse`. `hid_apple fnmode=1` and `appledrm show_notch=1` belong in
-the image, not first-boot. Notch *bar height* is runtime. Do not apply
-`fix-brcmfmac-supplicant.sh` on Asahi (it wedges BCM4387).
-
-Foreign packages today: `omarchy`, `omarchy-keyring`, `omarchy-settings`,
-`ttf-jetbrains-mono-nerd-basic`, `voxtype`, `yay`. Prebuild voxtype / yay /
-the nerd font into `[omarchy-aarch64]`. Build `omarchy` / `omarchy-settings`
-at image-build time from `--local-source` or a pinned ref — do not treat the
-binary repo as the ISO's source of truth for those.
-
-## Build time and size
-
-Measured on this machine (M2 Max, 12 cores, 30 GB RAM), for a package set of
-this size:
-
-| Stage | Cold | Warm |
+| Workstream | Responsibility | Status at this checkpoint |
 |---|---|---|
-| Download packages | ~1.5-2 min | ~0 |
-| pacstrap ~950 packages | 5-8 min | 5-8 min |
-| Build the AUR packages | 3-6 min | ~0 |
-| Provisioning | 1-2 min | 1-2 min |
-| Assemble `root.img` | 0.5-1 min | 0.5-1 min |
-| **Total** | **~12-20 min** | **~7-11 min** |
+| Live image and standalone installer | Offline payload, USB/manual NVMe boot, Linux provisioning, per-root ESP files | Implemented; latest provisioning/ESP fixes and fresh M3 evidence are in open installer PR #19 |
+| [Marcelo integration](asahi-installer-integration.md) | macOS front end and bound handoff to a prepared encrypted installation | Separate implementation workstream; not qualified by the standalone test |
+| [Managed kernels](managed-kernel-updates.md) | Coherent kernel packages, board tracks, safe updates and retained fallback | Audit/design complete; implementation and qualification pending |
 
-Do not use btrfs `compress=zstd:19` on the golden image. zstd:3 vs -19 was
-measured at ~500 MB/s vs 31 MB/s here; more importantly, compressing inside
-the filesystem is the wrong lever for a zip we will publish.
+These streams can develop against explicit pinned revisions without waiting for
+every merge. A documentation merge does not merge their code, change a dependency
+lock in another worktree, or update a built image.
 
-**Measure a pacstrap of the real package list before anyone bikesheds
-hosting.** A 2–3 GB artifact was inferred from Alarm Minimal and is likely
-wrong. GitHub Releases is 2 GiB per file. Alarm Desktop already zips to 1.88
-GiB. Trim, split, or R2 — Malik's call once we have a number.
+## Implemented baseline and evidence
 
-CI on `ubuntu-24.04-arm` is 4 vCPU / ~14 GB disk. 16K-aligned userspace ELFs
-generally run on a 4K kernel (the broken direction is 4K-assuming binaries on
-a 16K kernel). Prove it with a throwaway `pacstrap` + `mkinitcpio` in that
-container; do not boot `linux-asahi` there. Privileged docker is required for
-loop devices. Until the root is lean, this Mac is the release builder.
+The latest inspected installer baseline is
+[PR #19](https://github.com/omarchy-mac/omarchy-mac-iso/pull/19), revision
+`4407c2ddbe75e6732e9709ce320d7d0125ffbf27`; it remains open at this checkpoint.
+Descriptions below refer to that baseline, not necessarily `main`. Companion
+source revisions and package-building requirements are recorded in the
+[integration dependency table](asahi-installer-integration.md#2-pickup-isolation-and-pinned-dependencies).
 
-## Not bricking our machines
+The [provisioning checkpoint at that revision](https://github.com/omarchy-mac/omarchy-mac-iso/blob/4407c2ddbe75e6732e9709ce320d7d0125ffbf27/docs/provisioning-validation-20260907.md)
+records a full image rebuild completed at `2026-09-07T16:14:01Z`, followed by a
+fresh encrypted installation on M3 Air `apple,j613`. Checks confirmed:
 
-Raised by Malik, 2026-08-22. First-class requirement.
+- Successful provisioning and normal encrypted-root boot, correct managed GRUB
+  default/entries, and preservation of the existing owning EFI loader.
+- Snapper root configuration, read-only factory snapshot, first-run completion,
+  enabled required services, and no failed system/user units.
+- Deletion of the temporary installer slice and root growth to approximately
+  131.7 GiB. A separate, explicitly authorized legacy GRUB repair preceded the
+  test; the installer does not automatically perform that repair.
 
-Apple Silicon cannot be permanently bricked by software. The boot ROM is
-immutable and DFU restore always recovers the machine. The real worst case is
-"macOS is gone and I need a second Mac plus a USB-C cable", which is a ruined
-day, not a dead laptop.
+The tester subsequently reported a successful reboot after desktop updates,
+acceptable UI responsiveness, installed 1Password, and no repeated first-boot
+alerts. Those later observations are user-reported, not a second SSH audit.
 
-**Our code never performs the dangerous operation.** APFS, boot policy,
-LocalPolicy, 1TR, and m1n1 stage-1 live inside Asahi's installer, which we do
-not reimplement. We start from UEFI-only + unallocated space and only write
-into that space.
+This is evidence for one standalone M3 installation, not the new macOS app
+handoff, all M3 boards, M1/M2 release qualification, or kernel update/fallback.
+The [kernel audit](../docs/kernel-input-audit-20260907.md) also found that the
+historical Image and later USB module have different config histories. Working
+hardware and matching vermagic do not prove a coherent reproducible build.
 
-Rails, cheapest first:
+## One live payload, separate entry paths
 
-1. Partitioning unit-tested against loopback image files.
-2. Refuse APFS / Apple Boot / Apple Recovery GPT types in code, not comments.
-3. Only write to partitions this run created (`created_parts[]` + rollback).
-4. `--dry-run` that prints every destructive command; require a clean dry run
-   before a real one.
-5. Develop against an external disk (`--target /dev/sdX`). USB storage works
-   from a booted Omarchy and from our spike initramfs.
-6. Backup the GPT off-machine (`sfdisk --dump`, `sgdisk --backup`) before any
-   internal-disk test.
-7. Assert the internal ESP is byte-identical for `m1n1/boot.bin`, `vendorfw/`,
-   `asahi/` before and after an install.
-8. Both maintainers have read the DFU procedure. Scott has an M4 Air as a DFU
-   host (not an Asahi target). Malik has one Mac — so Scott takes every
-   destructive internal-disk test; Malik takes builder, CI, loopback tests,
-   external-disk installs, and review.
+The shared payload is `payload.img`: a provisioned btrfs filesystem with live
+label `OMARCHYLIVE` and subvolume `@`. Live boot mounts it read-only and uses a
+temporary overlay. The installed root gets its own filesystem identity and
+provisioning; it does not retain the live overlay as its root.
 
-"Brick" is four rungs: Linux will not boot (reinstall); boot policy confused
-(Recovery); DFU Revive (second Mac, **keeps data**); DFU Restore (second Mac,
-**erases disk**). Rail 2 is what keeps us off rung 4.
+### Standalone USB and manual NVMe paths
 
-## Stages
+- USB uses GPT with a FAT ESP (`OMARCHYISO`) and btrfs payload partition
+  (`OMARCHYLIVE`). It still requires prior Asahi UEFI provisioning from macOS;
+  a stock Mac cannot boot it directly through iBoot.
+- The existing macOS placer stages the payload at the tail of approved free
+  space after UEFI-only provisioning. Linux installs into the preceding hole;
+  first installed-root boot consumes only the temporary `omarchy-install`
+  slice. This is distinct from the new prepared-root contract below.
+- Wipe-USB, free-space, and replace-existing installation create a fresh btrfs
+  filesystem and copy used files with `tar` from `/run/omarchy-root`. They do
+  not `dd` the payload onto the final root. Clone remains a block-copy operation
+  through the last partition, with a rewritten clone btrfs UUID.
+- Standalone encryption choices remain separate from the mandatory-encryption
+  integrated target. Identity is collected in Linux, optional name/email are
+  supported, and an explicit summary precedes installation.
 
-### S0 — Repo hygiene
+At the PR #19 baseline a full build produces raw/compressed payloads and boot
+files; `--disk-image` additionally requests the complete USB disk image. A raw
+payload is not a whole-disk image. Package-set changes require a full rootfs
+rebuild; refreshing scripts or initrds cannot add packages.
 
-`~/code/omarchy-mac` has an extracted initramfs strewn across the root (`init`,
-`hooks/`, `usr/`, …). `--local-source` from that dirty tree will copy it.
-Triage, do not bulk-delete: keep `ipcfix/`, `malikpr/`, `upstream-pr/`,
-`tests/`. A clean clone is fine.
+### Intended product path: Marcelo's macOS app
 
-### S1 — Hardware spike — **done 2026-08-22**
+The [integration contract](asahi-installer-integration.md) is authoritative for
+this planned path. No USB is required:
 
-USB through U-Boot, firmware from the internal ESP, `dwc3-apple` binds, loop
-mount of `root.img`. Overlay + `switch_root` into busybox pid 1 is proven on
-the `--usb` image (2026-08-23, `OMARCHY_MAC_USB_USERSPACE pid=1`). Still open
-before S4: `iwctl`/`NetworkManager` in that environment.
-
-A warm reboot often leaves Type-C unenumerated in U-Boot (`0 Storage
-Device(s) found`). Cold start (shutdown, then power on) is required.
-`bootflow select` of the USB row can still load NVMe's
-`/EFI/BOOT/BOOTAA64.EFI`. Commands that worked on this NVMe-first machine:
-
-```
-load usb 0:1 ${kernel_addr_r} /EFI/BOOT/BOOTAA64.EFI
-bootefi ${kernel_addr_r} ${fdtcontroladdr}
+```text
+macOS app: approved allocation + Asahi provisioning + Recovery handoff
+  → temporary live installer: validate bound target, collect identity, encrypt
+  → installed-root boot: verify success, reclaim temporary slice, finish growth
 ```
 
-### S2 — Populate the repo, and the builder container
+Asahi prepares `stub APFS → paired ESP → expandable Root → temporary Installer`
+within the allocation approved in macOS. The Root marker image is staging
+evidence, never permission to format. Before persistent writes, Linux must
+validate the immutable prepared-install manifest, its boot-bound digest and
+installation ID, and exact board/disk/partition identities and geometry.
+Integrated mode must not fall back to global labels or a general target picker.
 
-Native `./bin/omarchy-mac-iso-make --usb` on this Mac produces a GPT image
-(ESP + btrfs payload) that boots on metal (2026-08-23, payload partition
-not a `root.img` loop). Then the same builder in
-`docker --platform linux/arm64` from Arch Linux ARM with `[asahi-alarm]`
-and `[omarchy-aarch64]`, then CI. `builder/build-rootfs.sh` (S3) replaces
-the busybox tree on `@` with Arch `base` / systemd.
+V1 is fresh coexistence only: mandatory LUKS2 with the desktop password entered
+in Linux, no permanent recovery partition, and no general replacement/repair.
+Keep a temporary "Resume installation" boot path and durable progress journal.
+After boot commit, never silently reformat; retry incomplete finalization.
+Reclamation resumes across slice deletion and partition/mapper/filesystem growth
+failures, stopping at the approved boundary. An absent slice is not completion.
 
-### S3 — The rootfs artifact
+Marcelo owns macOS allocation/provisioning, engine/UI changes, production boot
+bundle assembly, signing, and publication. This repo owns the component bundle,
+Linux validation/provisioning, and bounded resumable reclamation. The stock Asahi
+harness without the bound manifest can test packaging/boot only, not authorize
+destructive installation. Marcelo's agreement to the narrowly bounded Linux GPT
+change is required before release.
 
-`builder/build-rootfs.sh` via `./bin/omarchy-mac-iso-make --usb --rootfs`
-(needs root, `arch-install-scripts`). First cut **proven on metal
-2026-08-23**: pacstrap Arch `base` onto `@`, `switch_root` into systemd,
-autologin root shell, `nmtui` + brcmfmac scan, then `ping www.google.com`.
-wlan0 is missing until nmtui Rescan; after that both nmtui Activate and
-`nmcli … password` have worked. `gum` 0.17.0 and `hid_apple fnmode=1`
-proven on metal. **2026-08-25:** also pacstraps the `omarchy` package
-depends (Hyprland, Quickshell, SDDM, uwsm) and `pacman -U`s local
-`omarchy` / `omarchy-settings` / `omarchy-keyring` /
-`ttf-jetbrains-mono-nerd-basic` tarballs. Live target stays
-`multi-user.target`. **Metal 2026-08-25:** Lexar 8GiB payload, `pacman -Q`
-`omarchy 4.0.0-1` `hyprland 0.56.1-3` `quickshell 0.3.1-1` `sddm 0.21.0-7`
-at `root@omarchy-mac-live`. Still not `linux-asahi` / `asahi-scripts`.
-Default payload 12GiB with zstd on the filesystem. Pacstraps
-`omarchy-base.packages` (the script-based install set, minus
-aarch64-unavailable and `gpu-screen-recorder`) plus sudo / cryptsetup /
-wf-recorder. Graphical live session is still later; live target stays
-`multi-user.target`. `fnmode=1` / `show_notch=1` stay in
-this payload. Defer keymap / user / hostname to first boot or the
-installer. Produce `root.img` (btrfs, minimal, sparse, **not** internally
-zstd'd for publication).
+## Boot artifacts and ownership
 
-Regenerate the btrfs UUID at install (`btrfstune -u`).
+Live and installed boots require different initrds. The builder at the inspected
+baseline creates all three variants:
 
-### S4 — The installer
+| Purpose | Build artifact | Configuration |
+|---|---|---|
+| Live installer overlay | `initramfs-omarchy-usb.img` | `configs/usb-initcpio/mkinitcpio.conf` |
+| Encrypted installed root | `initramfs-linux-asahi.img` | `configs/usb-initcpio/mkinitcpio-install.conf` |
+| Plain installed root | `initramfs-linux-asahi-plain.img` | Installed-root variant without the encrypt hook |
 
-TUI, gum, phases. Questions from `setup-form.sh` plus encrypt.
+Installed System-ESP files live in `EFI/omarchy/<root-uuid>/`; the encrypted or
+plain installed initrd is copied there as `initramfs.img`. Never substitute the
+live-overlay initrd. Live refresh must rebuild both live and installed boot
+recipes, not leave the live boot stale. Live console quieting and installed
+Plymouth/unlock behavior require separate hardware checks.
 
-Overlay + `switch_root` on the live payload, then the install pipeline above.
-`@factory` as `install.sh` already does in `snapshot_factory_baseline`.
+The PR #19 ownership contract is:
 
-### S5 — asahi-installer os package
+- Piggyback through `custom.cfg` when another OS owns GRUB. Preserve its EFI
+  executable and menu; do not parse/rewrite the owner's `grub.cfg` to install us.
+- For temporary NVMe live placement, restore the saved pre-live owning loader
+  before piggybacking. Own the ESP bootloader only if none existed beforehand.
+  Refuse unsupported legacy layouts rather than guessing a repair.
+- Use root-private kernels and managed root fragments. Confirmed-absent canonical
+  managed entries may be excluded during reinstall; locked LUKS roots, customized
+  entries, and uncertain discovery must be preserved. Normal and verbose entries
+  reference the same kernel: verbose is not a previous-kernel fallback.
+- Never modify Apple partitions from Linux, replace complete `m1n1/boot.bin`,
+  write `vendorfw/` or `asahi/`, or claim that installation grants permission to
+  run `update-m1n1`. The existing narrowly guarded j613 DTB-slot overlay is the
+  only `boot.bin` exception; it is not a general firmware-update mechanism.
 
-Same `root.img` plus `esp/` (GRUB, `vmlinuz-linux-asahi`, initramfs — kernel
-**on the ESP**, or encrypt-afterwards hits `grub rescue>` as `docs/btrfs.md`
-describes). Copy Alarm's entry shape. `supported_fw: ["12.3", "12.3.1", "13.5"]`
-unless we test M3 (`14.8.3`).
+Vendor firmware comes from the paired internal ESP via the existing Asahi hook,
+not redistributed machine firmware in the payload. The image builder excludes
+stock boot-management packages whose hooks could touch the builder's ESP.
 
-### S6 — CI and hosting
+## Kernel maintenance: explicit remaining dependency
 
-`workflow_dispatch` green before nightly. Measure image size before picking
-GitHub Releases vs R2 vs split assets.
+ISO-installed roots currently have no managed update path for their UUID-private
+kernel/initrd. Stock kernel installation or boot-to-ESP migration is not a safe
+shortcut. Do not promise kernel updates from ordinary desktop package updates.
 
-### S7 — Testing
+The [managed-kernel plan](managed-kernel-updates.md) proposes board-qualified
+stable and M3-preview tracks, generation-specific payload packages, and one
+versioned deployment manager. Initially j613 is the preview candidate; stable
+7.1 provenance still needs recovery. Unknown boards must not inherit support.
 
-- `test/unit` — partitioning against loopback files; installer logic.
-- Hardware, non-destructive: USB first; internal NVMe only into a hole
-  left by shrinking APFS **from macOS**. This machine's p7 is that hole
-  (2026-08-24).
-- No Apple SoC QEMU. `cidata` plus `test/acceptance.d` after first boot.
+Updates must preserve a bootable previous Image/initrd **and its modules**, use
+root-private generation paths, and leave the owning bootloader and firmware
+untouched. Require a new coherent Image/module/config build rather than repackaging
+the mixed-history M3 artifacts. Kernel management is a separate implementation;
+integration development can proceed, but public release requires safe update and
+fallback evidence.
 
-## Verification
+## Remaining delivery gates
 
-1. **S1 (done):** USB through U-Boot, vendor firmware present, `dwc3-apple`
-   bound, overlay + `switch_root` into busybox pid 1. Layout (a) on metal
-   2026-08-23: btrfs `OMARCHYLIVE` on `/dev/sda2`,
-   `OMARCHY_MAC_USB_READY payload=/dev/sda2`, then
-   `OMARCHY_MAC_USB_USERSPACE pid=1` with marker and overlay write.
-   `--usb --rootfs` on metal 2026-08-23: `gum` 0.17.0, `fnmode=1`, nmtui
-   Rescan (first scan may time out), then `nmcli device wifi connect`
-   associated and `ping www.google.com` succeeded (`brcmf join_pref -52`
-   is noise). Pixel USB tether enumerates as `enu1`/`cdc_ncm`.
-2. `./bin/omarchy-mac-iso-make --usb` produces a GPT ESP + payload image on
-   this Mac and boots; `test/unit` green; `bash -n` over every script.
-   Container still open.
-3. Install to an external disk, unencrypted then encrypted. Boot each. Confirm
-   Wi-Fi, GPU/Quickshell bar at notch height, audio, media keys,
-   `omarchy snapshot restore` sees `@factory`.
-4. Internal ESP `m1n1/boot.bin`, `vendorfw/`, `asahi/` byte-identical before
-   and after.
-5. System ESP GRUB own-mode, metal ladder. **Rung 1 done 2026-08-24:**
-   ESP tarball on LINUXBAK; hid NVMe `BOOTAA64.EFI`; USB GRUB appeared
-   after `usb reset` (not a no-key autoboot). macOS restore: `diskutil
-   mount "EFI - OMARC"` failed; `mount -t msdos /dev/disk0s4 /Volumes/esp`
-   then rename `.omarchy-bak` back. **Rung 2 done 2026-08-25:** rebuilt
-   live USB (`--usb --rootfs`, SHARE mkdir), hid NVMe GRUB, free-space
-   install `mkpart` p7 (UUID `2bd9f673-…`), wrote System ESP
-   `BOOTAA64.EFI` (`m1n1`/`vendorfw`/`asahi` unchanged), USB unplugged →
-   `root@omarchy-mac`. Own-mode replaces pancake GRUB (one `BOOTAA64.EFI`).
-   Restoring the original file plus `grub-mkconfig` (`quiet splash`) is
-   how this desktop and branded Plymouth come back. Do not re-run Asahi's
-   installer. U-Boot is Asahi (`m1n1/boot.bin`), not stock Mac firmware.
-6. CI green on `workflow_dispatch` before nightly.
+1. Implement integration contract fixtures and zero-write validation/rejection
+   tests before enabling prepared-root formatting. Pin explicit companion source
+   and package inputs, including desktop review fixes; isolate concurrent work.
+2. Test deterministic ZIP64 packaging, capacity calculations including retained
+   live boot files, both boot recipes, and interrupted-operation recovery.
+   Exercise destructive checkpoints on disposable loopback fixtures with Apple
+   partition sentinels, not a physical disk by default.
+3. Run existing installer/ESP/provisioning regressions and Marcelo's focused
+   Python/Swift suites. Unit success is not visual, firmware, or Mac boot proof.
+4. Qualify the integrated path first on j613, then recorded M1/M2 board IDs:
+   macOS coexistence, Recovery handoff, cold boot, encrypted unlock, provisioning,
+   bounded reclamation, interruption recovery, and repeated reboot.
+5. Complete coherent managed-kernel builds and per-track update/fallback metal
+   tests. Keep M4 and unqualified boards unsupported. Stable release requires
+   evidence for the intended M1/M2/M3 matrix, not CPU-family inference.
+6. Obtain owner agreement and record source revisions, artifact digests, test
+   results, and remaining limitations before release assembly/signing/promotion.
+   Publication, PR creation, and hardware operations remain separately authorized
+   actions; writing a plan does not dispatch them.
 
-## Coordination
+## Historical design and measurements
 
-Work lands in `omarchy-mac/omarchy-mac-iso`, not as a PR into
-`codeberg/quattro`. `omarchy-mac-setup` stays the supported path for anyone
-already on Asahi Alarm and remains the fallback while the image matures.
-
-**This document is the first PR.** Two items are Malik's call: putting
-"Omarchy Mac" in the macOS installer list (S5), and hosting a multi-GB image.
-Note also `omarchy-mac/omarchy-mac-fedora` in the same org — no image-building
-machinery to reuse.
-
-## Parked follow-ups in omarchy-mac (not ISO work)
-
-1. `tests/` is invisible to `./test/all` / AGENTS.md. Wire it, after fixing
-   `bin/omarchy-mac-setup`'s hardcoded `SELF` so `tests/test-mac-setup.sh` is
-   not red on a machine that has already installed.
-2. Report the `dwc3-apple` omission to asahi-scripts, and carry the extra
-   modules in our live initramfs regardless.
-3. Restore this machine's `GRUB_TIMEOUT` (currently 20 s) and drop the spike
-   GRUB entry once we no longer need it.
+The [earlier design at the installer checkpoint](https://github.com/omarchy-mac/omarchy-mac-iso/blob/4407c2ddbe75e6732e9709ce320d7d0125ffbf27/plans/apple-silicon-image.md)
+preserves August USB/U-Boot/M2 experiments and the original S0–S7 proposal.
+Treat its timings, partition numbers, recovery commands, and unfinished-stage
+claims as historical observations, not present-day operating instructions.
+Its direct unencrypted OS-image front door and blanket post-install m1n1
+ownership claims are superseded by the contracts above. Historical experiments
+remain useful evidence, but do not qualify today's integrated release.
