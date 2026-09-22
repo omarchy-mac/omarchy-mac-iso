@@ -60,6 +60,7 @@ fi
 [[ $EUID == 0 ]] || fail "run as root"
 command -v gum >/dev/null || fail "gum not found"
 command -v dd >/dev/null || fail "dd not found"
+command -v loadkeys >/dev/null || fail "loadkeys not found"
 
 # tty1 is also the kmsg console (live GRUB uses loglevel=7). printk
 # overwrites gum; drop console loglevel for the TUI.
@@ -286,6 +287,43 @@ require_graphical_payload() {
 # Ask before the payload copy. A gum prompt after a long copy dies if
 # the lid closes or the TTY goes away (Input/output error). Validation
 # failures re-prompt; they must not exit the installer.
+ask_keyboard_layout() {
+  local choice keymap=us
+  if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
+    installer_keymap=us
+    return 0
+  fi
+  choice=$(gum choose --header "Keyboard layout" \
+    "US (us)" \
+    "United Kingdom (uk)" \
+    "German (de)" \
+    "French (fr)" \
+    "Spanish (es)" \
+    "Italian (it)" \
+    "Portuguese (pt-latin1)" \
+    "Brazilian Portuguese (br-abnt2)" \
+    "Other (enter keymap)")
+  [[ -n $choice ]] || fail "cancelled"
+  case $choice in
+    "US (us)") keymap=us ;;
+    "United Kingdom (uk)") keymap=uk ;;
+    "German (de)") keymap=de ;;
+    "French (fr)") keymap=fr ;;
+    "Spanish (es)") keymap=es ;;
+    "Italian (it)") keymap=it ;;
+    "Portuguese (pt-latin1)") keymap=pt-latin1 ;;
+    "Brazilian Portuguese (br-abnt2)") keymap=br-abnt2 ;;
+    "Other (enter keymap)")
+      keymap=$(gum input --placeholder "Example: us, de-latin1, fr" --header "Keyboard keymap")
+      [[ -n $keymap ]] || fail "keyboard keymap is required"
+      ;;
+    *) fail "unknown keyboard layout" ;;
+  esac
+  loadkeys "$keymap" >/dev/null 2>&1 || fail "could not apply keyboard layout $keymap"
+  installer_keymap=$keymap
+  printf '==> keyboard layout: %s\n' "$installer_keymap"
+}
+
 ask_desktop_user() {
   local pass2 reserved='^(root|bin|daemon|nobody|dbus|alpm|git|avahi|polkitd|sddm|uuidd)$'
   if [[ ${OMARCHY_INSTALL_DRY_RUN:-} == 1 ]]; then
@@ -1489,6 +1527,7 @@ if [[ -f $omarchy_path/logo.txt ]]; then
   printf '\033[0m\n'
 fi
 
+ask_keyboard_layout
 action=$(gum choose --header "How should this machine be installed?" \
   "Install into free space (keeps macOS and existing partitions)" \
   "Reinstall an existing Omarchy root (you pick the partition)" \

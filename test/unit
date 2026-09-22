@@ -496,6 +496,11 @@ check "live welcome prints the Omarchy wordmark" grep -q logo.txt \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-live-welcome"
 check "install menu prints the Omarchy wordmark" grep -q logo.txt \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "install asks for keyboard layout before install action menu" \
+  awk '/^[[:space:]]*ask_keyboard_layout$/{k=NR} /^action=/{a=NR} END{exit (k>0 && a>0 && k<a) ? 0 : 1}' \
+  "${repo_root}/configs/usb/rootfs/omarchy-mac-install"
+check "keyboard layout selection applies keymap immediately" \
+  bash -c 'awk "/^ask_keyboard_layout\\(\\)/,/^ask_desktop_user\\(\\)/" "'"${repo_root}"'/configs/usb/rootfs/omarchy-mac-install" | grep -q loadkeys'
 check "live welcome execs the installer" grep -q 'exec omarchy-mac-install' \
   "${repo_root}/configs/usb/rootfs/omarchy-mac-live-welcome"
 check "install asks for a hostname" grep -q ask_hostname \
